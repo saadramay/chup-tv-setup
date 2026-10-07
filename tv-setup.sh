@@ -124,7 +124,11 @@ else
     for i in $(seq 1 40); do
         STATE=$("$ADB" -s "$CONNECT_ADDR" get-state 2>&1)
         [ "$STATE" = "device" ] && break
-        case "$STATE" in *unauthorized*) [ "$i" = 1 ] && warn "On the TV, tick 'Always allow from this computer' and press OK on the debugging popup (waiting up to 2 minutes).";; esac
+        case "$STATE" in *unauthorized*)
+            [ "$i" = 1 ] && warn "On the TV, tick 'Always allow from this computer' and press OK on the debugging popup (waiting up to 2 minutes)."
+            # A denied popup never comes back on the same connection: reconnect every 15s to ask again.
+            [ $((i % 5)) = 0 ] && "$ADB" disconnect "$CONNECT_ADDR" >/dev/null 2>&1 ;;
+        esac
         sleep 3
         "$ADB" connect "$CONNECT_ADDR" >/dev/null 2>&1
     done
