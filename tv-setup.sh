@@ -83,25 +83,24 @@ elif [ -n "$(net_device)" ]; then
     SERIAL=$(net_device)
     ok "already connected over the network ($SERIAL)"
 else
-    echo "  No USB cable detected, connecting over Wi-Fi instead."
-    echo "  On the TV: Settings > Developer options > Wireless debugging > Pair device with pairing code"
-    pause "Keep that pairing screen open on the TV."
-
-    PAIR_ADDR=$(mdns_addr "_adb-tls-pairing")
-    if [ -z "$PAIR_ADDR" ]; then
-        echo "  Looking for the TV on this network..."
-        FOUND=$(scan_adb_port)
-        COUNT=$(printf '%s\n' "$FOUND" | grep -c .)
-        if [ "$COUNT" = 1 ]; then
-            PAIR_ADDR="$FOUND"
-            ok "found a TV box at $PAIR_ADDR"
-        elif [ "$COUNT" -gt 1 ]; then
-            echo "  Found more than one device:"
-            printf '%s\n' "$FOUND" | awk '{print "    " NR ". " $0}'
-            N=$(ask "Which one is this TV? Type the number:")
-            PAIR_ADDR=$(printf '%s\n' "$FOUND" | sed -n "${N}p")
-        else
-            PAIR_ADDR=$(ask "Couldn't find it. Type the IP address & Port shown on the TV pairing screen (like 192.168.1.20:37123):")
+    echo "  No USB cable detected, looking for the TV on this Wi-Fi..."
+    # Boxes with network adb already open (port 5555) need no pairing.
+    FOUND=$(scan_adb_port)
+    COUNT=$(printf '%s\n' "$FOUND" | grep -c .)
+    if [ "$COUNT" = 1 ]; then
+        PAIR_ADDR="$FOUND"
+        ok "found a TV box at $PAIR_ADDR"
+    elif [ "$COUNT" -gt 1 ]; then
+        echo "  Found more than one device:"
+        printf '%s\n' "$FOUND" | awk '{print "    " NR ". " $0}'
+        N=$(ask "Which one is this TV? Type the number:")
+        PAIR_ADDR=$(printf '%s\n' "$FOUND" | sed -n "${N}p")
+    else
+        echo "  On the TV: Settings > Developer options > Wireless debugging > Pair device with pairing code"
+        pause "Keep that pairing screen open on the TV."
+        PAIR_ADDR=$(mdns_addr "_adb-tls-pairing")
+        if [ -z "$PAIR_ADDR" ]; then
+            PAIR_ADDR=$(ask "Type the IP address & Port shown on the TV pairing screen (like 192.168.1.20:37123):")
         fi
     fi
 
@@ -122,10 +121,10 @@ else
     esac
 
     "$ADB" connect "$CONNECT_ADDR" >/dev/null 2>&1
-    for i in 1 2 3 4 5 6 7 8 9 10; do
+    for i in $(seq 1 40); do
         STATE=$("$ADB" -s "$CONNECT_ADDR" get-state 2>&1)
         [ "$STATE" = "device" ] && break
-        case "$STATE" in *unauthorized*) [ "$i" = 1 ] && warn "On the TV, tick 'Always allow' and press OK on the debugging popup.";; esac
+        case "$STATE" in *unauthorized*) [ "$i" = 1 ] && warn "On the TV, tick 'Always allow from this computer' and press OK on the debugging popup (waiting up to 2 minutes).";; esac
         sleep 3
         "$ADB" connect "$CONNECT_ADDR" >/dev/null 2>&1
     done
