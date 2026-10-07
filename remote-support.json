@@ -1,0 +1,16 @@
+{
+    "name": "RustDesk",
+    "version": "1.5.0",
+    "license": "AGPL-3.0, https://github.com/rustdesk/rustdesk",
+    "builds": {
+        "arm64-v8a": "https://github.com/rustdesk/rustdesk/releases/download/1.5.0/rustdesk-1.5.0-aarch64-signed.apk",
+        "armeabi-v7a": "https://github.com/rustdesk/rustdesk/releases/download/1.5.0/rustdesk-1.5.0-armv7-signed.apk",
+        "x86_64": "https://github.com/rustdesk/rustdesk/releases/download/1.5.0/rustdesk-1.5.0-x86_64-signed.apk"
+    },
+    "chup_tv": {
+        "selgate": {
+            "version": "26.09.29-1601",
+            "url": "https://github.com/saadramay/chup-tv-setup/releases/download/chup-tv-selgate-26.09.29-1601/chup-tv-selgate-26.09.29-1601.apk"
+        }
+    }
+}
