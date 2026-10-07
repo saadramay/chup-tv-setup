@@ -32,11 +32,8 @@ if [ -n "$RD_PASSWORD" ]; then
     password_ok "$RD_PASSWORD" || die "RUSTDESK_PASSWORD doesn't meet RustDesk's rules"
 else
     while :; do
-        printf '  RustDesk permanent password (hidden): ' >/dev/tty
-        read -r -s RD_PASSWORD </dev/tty; echo >/dev/tty
-        printf '  Type it again: ' >/dev/tty
-        read -r -s RD_PASSWORD2 </dev/tty; echo >/dev/tty
-        [ "$RD_PASSWORD" = "$RD_PASSWORD2" ] || { warn "they don't match, try again"; continue; }
+        printf '  RustDesk permanent password: ' >/dev/tty
+        IFS= read -r RD_PASSWORD </dev/tty
         password_ok "$RD_PASSWORD" && break
     done
 fi
