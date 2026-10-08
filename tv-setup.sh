@@ -60,8 +60,21 @@ bold "2/6  Connecting to the TV box"
 SERIAL=""
 
 mdns_addr()  { "$ADB" mdns services 2>/dev/null | awk -v t="$1" '$0 ~ t {print $NF; exit}'; }
+# adb's mDNS browsing is racy: a single call often comes back empty, so keep looking
+# for a few seconds and hold what we find.
+MDNS_CACHE=""
+mdns_refresh() {
+    local i
+    MDNS_CACHE=""
+    for i in $(seq 1 6); do
+        MDNS_CACHE=$("$ADB" mdns services 2>/dev/null)
+        printf '%s\n' "$MDNS_CACHE" | grep -q "adb-tls" && return 0
+        sleep 2
+    done
+    return 0
+}
 # mdns_addrs <type>: every matching mDNS address, e.g. mdns_addrs "_adb-tls-connect"
-mdns_addrs() { "$ADB" mdns services 2>/dev/null | awk -v t="$1" 'index($2, t) {print $3}'; }
+mdns_addrs() { printf '%s\n' "$MDNS_CACHE" | awk -v t="$1" 'index($2, t) {print $3}'; }
 
 # Older boxes expose adb on port 5555: scan this Mac's /24 for it.
 scan_adb_port() {
@@ -115,7 +128,8 @@ pair_wireless() {
             "$ADB" pair "$pair_addr" "$code" </dev/null | grep -qi "success" || die "pairing failed, check the code and try again"
             ok "paired"
             sleep 2
-            # The pairing screen changes the connect port: find this TV's new one.
+            # Pairing changes the connect port: look again for this TV's new one.
+            mdns_refresh
             ADDR=$(mdns_addrs "_adb-tls-connect" | awk -v ip="${pair_addr%:*}" 'index($0, ip":") {print; exit}')
             [ -n "$ADDR" ] || ADDR=$(ask "Type the IP address & Port shown on the main Wireless debugging screen:")
             ;;
@@ -138,6 +152,7 @@ done
 # Plus devices offering Wireless debugging (Xiaomi, Google TV), which adb finds by mDNS.
 # A pairing service means that TV's pairing screen is open; it wins, because a connect
 # service only works on a device this Mac is already paired with.
+mdns_refresh
 PAIRING_IPS=""
 for a in $(mdns_addrs "_adb-tls-pairing"); do
     PAIRING_IPS="$PAIRING_IPS ${a%:*}"
