@@ -2,7 +2,6 @@
 # Chup TV box setup: installs Chup TV + RustDesk and grants what unattended remote support needs.
 # Usage (macOS):  curl -fsSL https://raw.githubusercontent.com/saadramay/chup-tv-setup/main/tv-setup.sh | bash
 #            or:  bash tv-setup.sh [path/to/ChupTvApp.apk]
-# Asks for the RustDesk permanent password at the start, or set RUSTDESK_PASSWORD to skip the prompt.
 
 CHUP_TV_BRANCH="${CHUP_TV_BRANCH:-selgate}"
 REMOTE_SUPPORT_JSON="${REMOTE_SUPPORT_JSON:-https://raw.githubusercontent.com/saadramay/chup-tv-setup/main/remote-support.json}"
@@ -27,16 +26,17 @@ password_ok() {
     LC_ALL=C; case "$1" in *[!\ -~]*) unset LC_ALL; warn "only plain keyboard characters (no accents or emoji)"; return 1;; esac; unset LC_ALL
 }
 
+# Asks for the RustDesk permanent password once RustDesk is installed and Start on boot is set.
+# Or set RUSTDESK_PASSWORD to skip the prompt.
 RD_PASSWORD="${RUSTDESK_PASSWORD:-}"
-if [ -n "$RD_PASSWORD" ]; then
-    password_ok "$RD_PASSWORD" || die "RUSTDESK_PASSWORD doesn't meet RustDesk's rules"
-else
+ask_password() {
+    [ -n "$RD_PASSWORD" ] && { password_ok "$RD_PASSWORD" || die "RUSTDESK_PASSWORD doesn't meet RustDesk's rules"; return 0; }
     while :; do
         printf '  RustDesk permanent password: ' >/dev/tty
-        IFS= read -r RD_PASSWORD </dev/tty
+        IFS= read -r RD_PASSWORD </dev/tty || die "no password entered"
         password_ok "$RD_PASSWORD" && break
     done
-fi
+}
 
 
 # ---------- adb ----------
@@ -59,7 +59,6 @@ ok "adb ready"
 bold "2/6  Connecting to the TV box"
 SERIAL=""
 
-usb_device() { "$ADB" devices | awk 'NR>1 && $2=="device" && $1 !~ /:/ {print $1; exit}'; }
 mdns_addr()  { "$ADB" mdns services 2>/dev/null | awk -v t="$1" '$0 ~ t {print $NF; exit}'; }
 
 # Older boxes expose adb on port 5555: scan this Mac's /24 for it.
@@ -74,67 +73,115 @@ scan_adb_port() {
     wait
 }
 
-net_device() { "$ADB" devices | awk 'NR>1 && $2=="device" && $1 ~ /:/ {print $1; exit}'; }
-
-SERIAL=$(usb_device)
-if [ -n "$SERIAL" ]; then
-    ok "found over USB cable"
-elif [ -n "$(net_device)" ]; then
-    SERIAL=$(net_device)
-    ok "already connected over the network ($SERIAL)"
-else
-    echo "  No USB cable detected, looking for the TV on this Wi-Fi..."
-    # Boxes with network adb already open (port 5555) need no pairing.
-    FOUND=$(scan_adb_port)
-    COUNT=$(printf '%s\n' "$FOUND" | grep -c .)
-    if [ "$COUNT" = 1 ]; then
-        PAIR_ADDR="$FOUND"
-        ok "found a TV box at $PAIR_ADDR"
-    elif [ "$COUNT" -gt 1 ]; then
-        echo "  Found more than one device:"
-        printf '%s\n' "$FOUND" | awk '{print "    " NR ". " $0}'
-        N=$(ask "Which one is this TV? Type the number:")
-        PAIR_ADDR=$(printf '%s\n' "$FOUND" | sed -n "${N}p")
-    else
-        echo "  On the TV: Settings > Developer options > Wireless debugging > Pair device with pairing code"
-        pause "Keep that pairing screen open on the TV."
-        PAIR_ADDR=$(mdns_addr "_adb-tls-pairing")
-        if [ -z "$PAIR_ADDR" ]; then
-            PAIR_ADDR=$(ask "Type the IP address & Port shown on the TV pairing screen (like 192.168.1.20:37123):")
-        fi
-    fi
-
-    case "$PAIR_ADDR" in
-        *:*)
-            CODE=$(ask "Type the 6-digit pairing code shown on the TV:")
-            "$ADB" pair "$PAIR_ADDR" "$CODE" </dev/null | grep -qi "success" || die "pairing failed, check the code and try again"
-            ok "paired"
-            sleep 2
-            CONNECT_ADDR=$(mdns_addr "_adb-tls-connect")
-            if [ -z "$CONNECT_ADDR" ]; then
-                CONNECT_ADDR=$(ask "Type the IP address & Port shown on the main Wireless debugging screen:")
-            fi
-            ;;
-        *)
-            CONNECT_ADDR="$PAIR_ADDR:5555"
-            ;;
-    esac
-
-    "$ADB" connect "$CONNECT_ADDR" >/dev/null 2>&1
+# connect_wait <addr>: connect and wait up to 2 minutes for the box to be ready.
+connect_wait() {
+    local addr="$1" state i
+    case "$addr" in *:*) "$ADB" connect "$addr" >/dev/null 2>&1;; esac
     for i in $(seq 1 40); do
-        STATE=$("$ADB" -s "$CONNECT_ADDR" get-state 2>&1)
-        [ "$STATE" = "device" ] && break
-        case "$STATE" in *unauthorized*)
+        state=$("$ADB" -s "$addr" get-state 2>&1)
+        [ "$state" = "device" ] && return 0
+        case "$state" in *unauthorized*)
             [ "$i" = 1 ] && warn "On the TV, tick 'Always allow from this computer' and press OK on the debugging popup (waiting up to 2 minutes)."
             # A denied popup never comes back on the same connection: reconnect every 15s to ask again.
-            [ $((i % 5)) = 0 ] && "$ADB" disconnect "$CONNECT_ADDR" >/dev/null 2>&1 ;;
+            case "$addr" in *:*) [ $((i % 5)) = 0 ] && "$ADB" disconnect "$addr" >/dev/null 2>&1;; esac ;;
         esac
         sleep 3
-        "$ADB" connect "$CONNECT_ADDR" >/dev/null 2>&1
+        case "$addr" in *:*) "$ADB" connect "$addr" >/dev/null 2>&1;; esac
     done
-    [ "$STATE" = "device" ] || die "could not connect to $CONNECT_ADDR ($STATE)"
-    SERIAL="$CONNECT_ADDR"
-    ok "connected over Wi-Fi"
+    return 1
+}
+
+# pair_wireless: for boxes that only offer Wireless debugging with a pairing code (Xiaomi and friends).
+# Sets ADDR and STATE.
+pair_wireless() {
+    local pair_addr code
+    echo "  On the TV: Settings > Developer options > Wireless debugging > Pair device with pairing code"
+    pause "Keep that pairing screen open on the TV."
+    pair_addr=$(mdns_addr "_adb-tls-pairing")
+    if [ -z "$pair_addr" ]; then
+        pair_addr=$(ask "Type the IP address & Port shown on the TV pairing screen (like 192.168.1.20:37123):")
+    fi
+    case "$pair_addr" in
+        *:*)
+            code=$(ask "Type the 6-digit pairing code shown on the TV:")
+            "$ADB" pair "$pair_addr" "$code" </dev/null | grep -qi "success" || die "pairing failed, check the code and try again"
+            ok "paired"
+            sleep 2
+            ADDR=$(mdns_addr "_adb-tls-connect")
+            [ -n "$ADDR" ] || ADDR=$(ask "Type the IP address & Port shown on the main Wireless debugging screen:")
+            ;;
+        *)
+            ADDR="$pair_addr:5555"
+            ;;
+    esac
+    STATE="new"
+}
+
+echo "  Looking for devices on this Mac and this Wi-Fi..."
+# Everything adb already sees (USB, network, emulator), ready or not.
+LIST=$("$ADB" devices | awk 'NR>1 && $1!="*" && NF>=2 {print $1, $2}')
+# Plus boxes on this Wi-Fi with adb already open (port 5555): those need no pairing.
+for ip in $(scan_adb_port); do
+    echo "$LIST" | awk -v a="$ip:5555" '$1==a {found=1} END {exit !found}' \
+        || LIST="$LIST
+$ip:5555 new"
+done
+
+ADDR=""; STATE=""
+if [ -n "$LIST" ]; then
+    echo "  Devices found:"
+    N=0
+    while read -r addr state; do
+        [ -n "$addr" ] || continue
+        N=$((N+1))
+        case "$addr" in
+            emulator-*) kind="emulator";;
+            *:*)        kind="network";;
+            *)          kind="USB";;
+        esac
+        case "$state" in
+            device)
+                model=$("$ADB" -s "$addr" shell getprop ro.product.model 2>/dev/null </dev/null | tr -d '\r')
+                ver=$("$ADB" -s "$addr" shell getprop ro.build.version.release 2>/dev/null </dev/null | tr -d '\r')
+                label="$model, Android $ver";;
+            new) label="found on this Wi-Fi";;
+            *)   label="$state: press Allow on the TV";;
+        esac
+        printf '    %d. %-22s %-28s (%s)\n' "$N" "$addr" "$label" "$kind"
+    done < <(echo "$LIST")
+
+    PICK=$(ask "Which one is this TV? (Enter = 1, or 'pair' to use a pairing code)")
+    case "$PICK" in
+        p|pair) pair_wireless;;
+        "")     PICK=1;;
+    esac
+fi
+
+if [ -z "$ADDR" ]; then
+    if [ -z "$LIST" ]; then
+        echo "  No device found."
+        pair_wireless
+    else
+        case "$PICK" in
+            *[!0-9]*)
+                # not a number: an address typed by hand
+                ADDR=$PICK; STATE=new
+                case "$ADDR" in *:*) ;; *) ADDR="$ADDR:5555";; esac ;;
+            *)
+                PICKED=$(printf '%s\n' "$LIST" | sed -n "${PICK}p")
+                [ -n "$PICKED" ] || die "there is no device $PICK in the list"
+                ADDR=${PICKED%% *}; STATE=${PICKED##* } ;;
+        esac
+    fi
+fi
+
+if [ "$STATE" = "device" ]; then
+    SERIAL=$ADDR
+    ok "using $ADDR"
+else
+    connect_wait "$ADDR" || die "could not connect to $ADDR"
+    SERIAL=$ADDR
+    ok "connected ($SERIAL)"
 fi
 
 A() { "$ADB" -s "$SERIAL" "$@"; }
@@ -277,6 +324,7 @@ auto_settings() {
     ui_switch_on '^Start on boot' || return 1
     # The floating icon stuck to the screen edge; battery exemption + foreground service keep RustDesk alive without it.
     ui_switch_set '^Floating window' off || return 1
+    ask_password
     ui_tap '^Share screen&#10;Tab' || return 1
     ui_tap '^Start service$' || return 1
     accept_scam_warning
@@ -387,6 +435,7 @@ echo "  Working on the TV screen, please don't press anything on the remote..."
 if auto_settings && service_running; then DONE=1; ok "done automatically"; else warn "automatic setup didn't finish, please do these steps by hand"; fi
 
 if [ "$DONE" = 0 ]; then
+    ask_password
     echo "  On the TV, open RustDesk and:"
     echo "    1. Settings > turn ON 'Start on boot' and turn OFF 'Floating window'"
     echo "    2. Open the 'Share screen' tab and press 'Start service'"
