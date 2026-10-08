@@ -126,6 +126,9 @@ for ip in $(scan_adb_port); do
         || LIST="$LIST
 $ip:5555 new"
 done
+# No blank lines, so list position N is line N.
+LIST=$(printf '%s\n' "$LIST" | grep -v '^[[:space:]]*$')
+COUNT=$(printf '%s\n' "$LIST" | grep -c .)
 
 ADDR=""; STATE=""
 if [ -n "$LIST" ]; then
@@ -150,10 +153,20 @@ if [ -n "$LIST" ]; then
         printf '    %d. %-22s %-28s (%s)\n' "$N" "$addr" "$label" "$kind"
     done < <(echo "$LIST")
 
-    PICK=$(ask "Which one is this TV? (Enter = 1, or 'pair' to use a pairing code)")
+    # Enter only picks when there is a single device, so nobody sets up the wrong one by accident.
+    while :; do
+        if [ "$COUNT" = 1 ]; then
+            PICK=$(ask "Is this the TV? (Enter = yes, or 'pair' to use a pairing code)")
+            [ -z "$PICK" ] && PICK=1
+        else
+            PICK=$(ask "Which one is this TV? Type its number (or 'pair' to use a pairing code)")
+        fi
+        [ -n "$PICK" ] && break
+        warn "please type the number of the TV"
+    done
     case "$PICK" in
         p|pair) pair_wireless;;
-        "")     PICK=1;;
+        n|N|no|No) [ "$COUNT" = 1 ] && pair_wireless;;
     esac
 fi
 
