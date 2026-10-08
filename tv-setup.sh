@@ -60,6 +60,8 @@ bold "2/6  Connecting to the TV box"
 SERIAL=""
 
 mdns_addr()  { "$ADB" mdns services 2>/dev/null | awk -v t="$1" '$0 ~ t {print $NF; exit}'; }
+# mdns_addrs <type>: every matching mDNS address, e.g. mdns_addrs "_adb-tls-connect"
+mdns_addrs() { "$ADB" mdns services 2>/dev/null | awk -v t="$1" 'index($2, t) {print $3}'; }
 
 # Older boxes expose adb on port 5555: scan this Mac's /24 for it.
 scan_adb_port() {
@@ -73,11 +75,11 @@ scan_adb_port() {
     wait
 }
 
-# connect_wait <addr>: connect and wait up to 2 minutes for the box to be ready.
+# connect_wait <addr> [tries]: connect and wait up to 2 minutes for the box to be ready.
 connect_wait() {
-    local addr="$1" state i
+    local addr="$1" tries="${2:-40}" state i
     case "$addr" in *:*) "$ADB" connect "$addr" >/dev/null 2>&1;; esac
-    for i in $(seq 1 40); do
+    for i in $(seq 1 "$tries"); do
         state=$("$ADB" -s "$addr" get-state 2>&1)
         [ "$state" = "device" ] && return 0
         case "$state" in *unauthorized*)
@@ -91,23 +93,30 @@ connect_wait() {
     return 1
 }
 
-# pair_wireless: for boxes that only offer Wireless debugging with a pairing code (Xiaomi and friends).
+# pair_wireless [pairing addr]: for boxes that only offer Wireless debugging with a pairing code
+# (Xiaomi, Google TV). With an address it skips the mDNS lookup; without one it asks the TV.
 # Sets ADDR and STATE.
 pair_wireless() {
-    local pair_addr code
+    local pair_addr="$1" code
     echo "  On the TV: Settings > Developer options > Wireless debugging > Pair device with pairing code"
-    pause "Keep that pairing screen open on the TV."
-    pair_addr=$(mdns_addr "_adb-tls-pairing")
+    if [ -n "$pair_addr" ]; then
+        ok "that TV is offering pairing at $pair_addr"
+    else
+        pause "Keep that pairing screen open on the TV."
+        pair_addr=$(mdns_addrs "_adb-tls-pairing" | head -1)
+    fi
     if [ -z "$pair_addr" ]; then
         pair_addr=$(ask "Type the IP address & Port shown on the TV pairing screen (like 192.168.1.20:37123):")
     fi
+    [ -n "$pair_addr" ] || die "no pairing address given"
     case "$pair_addr" in
         *:*)
             code=$(ask "Type the 6-digit pairing code shown on the TV:")
             "$ADB" pair "$pair_addr" "$code" </dev/null | grep -qi "success" || die "pairing failed, check the code and try again"
             ok "paired"
             sleep 2
-            ADDR=$(mdns_addr "_adb-tls-connect")
+            # The pairing screen changes the connect port: find this TV's new one.
+            ADDR=$(mdns_addrs "_adb-tls-connect" | awk -v ip="${pair_addr%:*}" 'index($0, ip":") {print; exit}')
             [ -n "$ADDR" ] || ADDR=$(ask "Type the IP address & Port shown on the main Wireless debugging screen:")
             ;;
         *)
@@ -125,6 +134,21 @@ for ip in $(scan_adb_port); do
     echo "$LIST" | awk -v a="$ip:5555" '$1==a {found=1} END {exit !found}' \
         || LIST="$LIST
 $ip:5555 new"
+done
+# Plus devices offering Wireless debugging (Xiaomi, Google TV), which adb finds by mDNS.
+# A pairing service means that TV's pairing screen is open; it wins, because a connect
+# service only works on a device this Mac is already paired with.
+PAIRING_IPS=""
+for a in $(mdns_addrs "_adb-tls-pairing"); do
+    PAIRING_IPS="$PAIRING_IPS ${a%:*}"
+    case "$LIST" in *"$a "*) ;; *) LIST="$LIST
+$a pairing";; esac
+done
+for a in $(mdns_addrs "_adb-tls-connect"); do
+    case " $PAIRING_IPS " in *" ${a%:*} "*) continue;; esac
+    echo "$LIST" | awk -v x="$a" '$1==x {found=1} END {exit !found}' \
+        || LIST="$LIST
+$a paired"
 done
 # No blank lines, so list position N is line N.
 LIST=$(printf '%s\n' "$LIST" | grep -v '^[[:space:]]*$')
@@ -147,8 +171,10 @@ if [ -n "$LIST" ]; then
                 model=$("$ADB" -s "$addr" shell getprop ro.product.model 2>/dev/null </dev/null | tr -d '\r')
                 ver=$("$ADB" -s "$addr" shell getprop ro.build.version.release 2>/dev/null </dev/null | tr -d '\r')
                 label="$model, Android $ver";;
-            new) label="found on this Wi-Fi";;
-            *)   label="$state: press Allow on the TV";;
+            new)     label="found on this Wi-Fi";;
+            paired)  label="wireless debugging";;
+            pairing) label="wireless debugging, type its pairing code";;
+            *)       label="$state: press Allow on the TV";;
         esac
         printf '    %d. %-22s %-28s (%s)\n' "$N" "$addr" "$label" "$kind"
     done < <(echo "$LIST")
@@ -186,6 +212,18 @@ if [ -z "$ADDR" ]; then
                 ADDR=${PICKED%% *}; STATE=${PICKED##* } ;;
         esac
     fi
+fi
+
+if [ "$STATE" = "pairing" ]; then
+    pair_wireless "$ADDR"
+fi
+
+if [ "$STATE" = "paired" ] && ! connect_wait "$ADDR" 3; then
+    # A TV advertises its connect service whether or not this Mac is paired with it, and an
+    # unpaired TV shows no popup at all: pairing is the only way in from here.
+    "$ADB" disconnect "$ADDR" >/dev/null 2>&1
+    warn "this Mac isn't paired with that TV yet"
+    pair_wireless
 fi
 
 if [ "$STATE" = "device" ]; then
