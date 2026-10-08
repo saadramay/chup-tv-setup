@@ -14,8 +14,12 @@ RustDesk needs for unattended remote support, and checks it comes back by itself
    curl -fsSL https://raw.githubusercontent.com/saadramay/chup-tv-setup/main/tv-setup.sh | bash
    ```
 
-4. Type the RustDesk permanent password when asked. On boxes with a pairing code, type the
-   6-digit code shown on the TV. Don't touch the TV remote while it works.
+4. The script shows every device it can see (USB, this Wi-Fi, emulators) and asks which one is the
+   TV. Enter alone chooses the first one. If the TV only offers Wireless debugging with a pairing
+   code (Xiaomi and similar), type `pair` and then the 6-digit code shown on the TV. Don't touch
+   the TV remote while the rest runs.
+5. When RustDesk is installed and 'Start on boot' is on, the script asks for the RustDesk
+   permanent password and types it into the TV itself.
 
 Set `RUSTDESK_PASSWORD=...` before the command to skip the password prompt.
 
