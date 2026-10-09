@@ -41,25 +41,41 @@ ask_password() {
 
 # ---------- adb ----------
 bold "1/6  Getting adb"
+# The manifest carries every download URL (adb and both apps), so read it up front.
+# If it can't be refreshed we keep the copy from an earlier run rather than failing here.
+MANIFEST="$WORK/remote-support.json"
+MANTMP="$WORK/remote-support.json.tmp"
+if curl -fsSL -o "$MANTMP" "$REMOTE_SUPPORT_JSON" 2>/dev/null || cp "${REMOTE_SUPPORT_JSON#file://}" "$MANTMP" 2>/dev/null; then
+    mv "$MANTMP" "$MANIFEST"
+else
+    rm -f "$MANTMP"
+fi
+
 if command -v adb >/dev/null 2>&1; then
     ADB=$(command -v adb)
 else
     ADB="$WORK/platform-tools/adb"
     if [ ! -x "$ADB" ]; then
-        curl -fsSL -o "$WORK/pt.zip" https://dl.google.com/android/repository/platform-tools-latest-darwin.zip \
-            || die "could not download adb from Google"
-        unzip -qo "$WORK/pt.zip" -d "$WORK" || die "could not unpack adb"
-        rm -f "$WORK/pt.zip"
+        # Our pinned release asset first, Google's own mirror as the fallback.
+        PT_URLS="$(plutil -extract platform_tools.darwin raw -o - "$MANIFEST" 2>/dev/null) https://dl.google.com/android/repository/platform-tools-latest-darwin.zip"
+        for PT in $PT_URLS; do
+            if curl -fsSL -o "$WORK/pt.zip" "$PT" 2>/dev/null && unzip -qo "$WORK/pt.zip" -d "$WORK" 2>/dev/null; then
+                rm -f "$WORK/pt.zip"
+                break
+            fi
+            rm -f "$WORK/pt.zip"
+        done
+        [ -x "$ADB" ] || die "could not download adb (tried our release mirror, then dl.google.com)"
     fi
 fi
-"$ADB" start-server >/dev/null 2>&1
+"$ADB" start-server </dev/null >/dev/null 2>&1
 ok "adb ready"
 
 # ---------- connect ----------
 bold "2/6  Connecting to the TV box"
 SERIAL=""
 
-mdns_addr()  { "$ADB" mdns services 2>/dev/null | awk -v t="$1" '$0 ~ t {print $NF; exit}'; }
+mdns_addr()  { "$ADB" mdns services </dev/null 2>/dev/null | awk -v t="$1" '$0 ~ t {print $NF; exit}'; }
 # adb's mDNS browsing is racy: a single call often comes back empty, so keep looking
 # for a few seconds and hold what we find.
 MDNS_CACHE=""
@@ -67,7 +83,7 @@ mdns_refresh() {
     local i
     MDNS_CACHE=""
     for i in $(seq 1 6); do
-        MDNS_CACHE=$("$ADB" mdns services 2>/dev/null)
+        MDNS_CACHE=$("$ADB" mdns services </dev/null 2>/dev/null)
         printf '%s\n' "$MDNS_CACHE" | grep -q "adb-tls" && return 0
         sleep 2
     done
@@ -91,17 +107,17 @@ scan_adb_port() {
 # connect_wait <addr> [tries]: connect and wait up to 2 minutes for the box to be ready.
 connect_wait() {
     local addr="$1" tries="${2:-40}" state i
-    case "$addr" in *:*) "$ADB" connect "$addr" >/dev/null 2>&1;; esac
+    case "$addr" in *:*) "$ADB" connect "$addr" </dev/null >/dev/null 2>&1;; esac
     for i in $(seq 1 "$tries"); do
-        state=$("$ADB" -s "$addr" get-state 2>&1)
+        state=$("$ADB" -s "$addr" get-state </dev/null 2>&1)
         [ "$state" = "device" ] && return 0
         case "$state" in *unauthorized*)
             [ "$i" = 1 ] && warn "On the TV, tick 'Always allow from this computer' and press OK on the debugging popup (waiting up to 2 minutes)."
             # A denied popup never comes back on the same connection: reconnect every 15s to ask again.
-            case "$addr" in *:*) [ $((i % 5)) = 0 ] && "$ADB" disconnect "$addr" >/dev/null 2>&1;; esac ;;
+            case "$addr" in *:*) [ $((i % 5)) = 0 ] && "$ADB" disconnect "$addr" </dev/null >/dev/null 2>&1;; esac ;;
         esac
         sleep 3
-        case "$addr" in *:*) "$ADB" connect "$addr" >/dev/null 2>&1;; esac
+        case "$addr" in *:*) "$ADB" connect "$addr" </dev/null >/dev/null 2>&1;; esac
     done
     return 1
 }
@@ -142,7 +158,7 @@ pair_wireless() {
 
 echo "  Looking for devices on this Mac and this Wi-Fi..."
 # Everything adb already sees (USB, network, emulator), ready or not.
-LIST=$("$ADB" devices | awk 'NR>1 && $1!="*" && NF>=2 {print $1, $2}')
+LIST=$("$ADB" devices </dev/null | awk 'NR>1 && $1!="*" && NF>=2 {print $1, $2}')
 # Plus boxes on this Wi-Fi with adb already open (port 5555): those need no pairing.
 for ip in $(scan_adb_port); do
     echo "$LIST" | awk -v a="$ip:5555" '$1==a {found=1} END {exit !found}' \
@@ -236,7 +252,7 @@ fi
 if [ "$STATE" = "paired" ] && ! connect_wait "$ADDR" 3; then
     # A TV advertises its connect service whether or not this Mac is paired with it, and an
     # unpaired TV shows no popup at all: pairing is the only way in from here.
-    "$ADB" disconnect "$ADDR" >/dev/null 2>&1
+    "$ADB" disconnect "$ADDR" </dev/null >/dev/null 2>&1
     warn "this Mac isn't paired with that TV yet"
     pair_wireless
 fi
@@ -250,7 +266,9 @@ else
     ok "connected ($SERIAL)"
 fi
 
-A() { "$ADB" -s "$SERIAL" "$@"; }
+# adb takes the script's stdin away from us (it is often piped in with curl | bash), and
+# would otherwise swallow lines meant for a pipe further down. Never let it read stdin.
+A() { "$ADB" -s "$SERIAL" "$@" </dev/null; }
 S() { "$ADB" -s "$SERIAL" shell "$@" </dev/null; }
 
 MODEL=$(S getprop ro.product.model | tr -d '\r')
@@ -260,9 +278,8 @@ ok "$MODEL, Android $ANDROID, $ABI"
 
 # ---------- download ----------
 bold "3/6  Downloading apps"
-MANIFEST="$WORK/remote-support.json"
-curl -fsSL -o "$MANIFEST" "$REMOTE_SUPPORT_JSON" 2>/dev/null || cp "${REMOTE_SUPPORT_JSON#file://}" "$MANIFEST" 2>/dev/null \
-    || die "could not read $REMOTE_SUPPORT_JSON"
+# MANIFEST was fetched in step 1; it must exist now for the URLs below.
+[ -s "$MANIFEST" ] || die "could not read $REMOTE_SUPPORT_JSON"
 RD_URL=$(plutil -extract "builds.$ABI" raw -o - "$MANIFEST" 2>/dev/null)
 [ -n "$RD_URL" ] || die "no RustDesk build listed for $ABI"
 curl -fL --progress-bar -o "$WORK/rustdesk.apk" "$RD_URL" || die "RustDesk download failed"
@@ -318,37 +335,126 @@ SIZE=$(S wm size | tr -d '\r' | awk '/Physical/{print $3}')
 SW=${SIZE%x*}; SH=${SIZE#*x}
 case "$SW$SH" in *[!0-9]*|"") SW=1280; SH=720;; esac
 SWIPE="$((SW/2)) $((SH*3/4)) $((SW/2)) $((SH/4))"
+# The same swipe the other way: back up towards the top of the list.
+SWIPE_BACK="$((SW/2)) $((SH/4)) $((SW/2)) $((SH*3/4))"
 
 ui_dump() { S uiautomator dump /sdcard/chup-ui.xml >/dev/null 2>&1; A exec-out cat /sdcard/chup-ui.xml 2>/dev/null; }
 
-# Prints "x y" of the first node whose text or content-desc matches the regex.
-ui_find() {
+# A fingerprint of what is on screen, so we can tell whether a swipe moved the list.
+ui_sig() {
+    ui_dump | LC_ALL=C perl -0ne '
+        my @o;
+        while (/<node\b([^>]*)>/g) {
+            my $a = $1;
+            my ($d) = $a =~ /\bcontent-desc="([^"]*)"/; my ($t) = $a =~ /\btext="([^"]*)"/;
+            my ($y1) = $a =~ /\bbounds="\[\d+,(\d+)\]/;
+            my $v = defined $d ? $d : (defined $t ? $t : "");
+            next unless defined $y1 && length $v;
+            push @o, "$y1:$v"; last if @o >= 6;
+        }
+        print join("|", @o);'
+}
+
+ui_scroll() { if [ "$1" -eq 1 ]; then S input swipe $SWIPE 300; else S input swipe $SWIPE_BACK 300; fi; sleep 1; }
+
+# ui_seek <probe> <regex>: scroll until the probe prints something. Goes down the list first
+# and reverses when it stops moving, so a row above the current position is still reachable.
+# Prints the probe's output; returns 1 when the row is not on this screen at all.
+ui_seek() {
+    local out sig prev="" dir=1 i
+    for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16; do
+        out=$("$@")
+        [ -n "$out" ] && { printf '%s\n' "$out"; return 0; }
+        sig=$(ui_sig)
+        if [ -n "$sig" ]; then
+            if [ "$sig" = "$prev" ]; then
+                [ "$dir" -eq 1 ] || return 1
+                dir=-1
+            fi
+            prev=$sig
+        fi
+        ui_scroll "$dir"
+    done
+    return 1
+}
+
+# "x1 y1 x2 y2" of the first node whose text or content-desc matches the regex.
+ui_box() {
     ui_dump | LC_ALL=C perl -0ne '
         my $re = qr/'"$1"'/i;
         while (/<node\b([^>]*)>/g) {
             my $a = $1;
             my ($t) = $a =~ /\btext="([^"]*)"/; my ($d) = $a =~ /\bcontent-desc="([^"]*)"/;
             next unless (($t // "") =~ $re) || (($d // "") =~ $re);
-            if ($a =~ /bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"/) { printf "%d %d\n", ($1+$3)/2, ($2+$4)/2; exit }
+            if ($a =~ /bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"/) { print "$1 $2 $3 $4"; exit }
         }'
+}
+
+# Prints "x y" of the first node whose text or content-desc matches the regex.
+ui_find() {
+    local b
+    b=$(ui_box "$1")
+    [ -n "$b" ] || return 0
+    set -- $b
+    printf '%d %d\n' $((($1 + $3) / 2)) $((($2 + $4) / 2))
+}
+
+# The on-screen keyboard swallows every tap inside its touchable region, which on a TV is the
+# whole width of the lower part of the screen - far wider than the keys you can see. Empty
+# when no keyboard is showing.
+ime_rect() {
+    A shell dumpsys window windows 2>/dev/null | tr -d '\r' | awk '
+        /Window\{[^}]*InputMethod\}/ { im = 1; next }
+        im && /touchable region=/ {
+            if (match($0, /SkRegion\(\(-?[0-9]+,-?[0-9]+,-?[0-9]+,-?[0-9]+\)\)/)) {
+                s = substr($0, RSTART, RLENGTH); gsub(/[^0-9-]/, " ", s); print s; exit
+            }
+        }
+        /^  Window #/ { im = 0 }'
+}
+
+# A point inside "x1 y1 x2 y2" that the keyboard is not covering, so the tap reaches the app.
+tap_point() {
+    local x1=$1 y1=$2 x2=$3 y2=$4 r kx1 ky1 kx2 ky2 cx cy cand x y i
+    cx=$(((x1 + x2) / 2)); cy=$(((y1 + y2) / 2))
+    r=$(ime_rect)
+    [ -n "$r" ] || { printf '%d %d\n' "$cx" "$cy"; return 0; }
+    set -- $r; kx1=$1; ky1=$2; kx2=$3; ky2=$4
+    for cand in "$cx $cy" "$cx $((y1 + 4))" "$cx $(((y1 + ky1) / 2))" \
+                "$cx $((y2 - 4))" "$cx $(((ky2 + y2) / 2))" \
+                "$((x1 + 4)) $cy" "$(((x1 + kx1) / 2)) $cy" \
+                "$((x2 - 4)) $cy" "$(((x2 + kx2) / 2)) $cy"; do
+        set -- $cand; x=$1; y=$2
+        [ "$x" -ge "$x1" ] && [ "$x" -le "$x2" ] && [ "$y" -ge "$y1" ] && [ "$y" -le "$y2" ] || continue
+        if [ "$x" -lt "$kx1" ] || [ "$x" -gt "$kx2" ] || [ "$y" -lt "$ky1" ] || [ "$y" -gt "$ky2" ]; then
+            printf '%d %d\n' "$x" "$y"; return 0
+        fi
+    done
+    # Fully covered: Tab moves focus off the control, which makes the keyboard go away.
+    # Wait until it has really gone - the keyboard takes a moment to slide out, and a tap
+    # sent too early lands on the keys instead of the control.
+    for i in 1 2 3 4 5; do
+        [ -z "$(ime_rect)" ] && break
+        S input keyevent 61
+        sleep 0.5
+    done
+    sleep 0.3
+    printf '%d %d\n' "$cx" "$cy"
 }
 
 # Optional popups: look once, never scroll.
 ui_tap_if() {
-    local xy
-    xy=$(ui_find "$1")
-    [ -n "$xy" ] && { S input tap $xy; sleep 1.5; }
-    return 0
+    local b
+    b=$(ui_box "$1")
+    [ -n "$b" ] || return 0
+    S input tap $(tap_point $b); sleep 1.5
 }
 
 ui_tap() {
-    local xy i
-    for i in 1 2 3 4 5; do
-        xy=$(ui_find "$1")
-        if [ -n "$xy" ]; then S input tap $xy; sleep 1.5; return 0; fi
-        S input swipe $SWIPE 300; sleep 1
-    done
-    return 1
+    local b
+    b=$(ui_seek ui_box "$1") || return 1
+    [ -n "$b" ] || return 1
+    S input tap $(tap_point $b); sleep 1.5
 }
 
 # Prints "on|off x y" for the Switch sitting on the same row as the label matching the regex.
@@ -367,64 +473,77 @@ ui_switch() {
 
 # ui_switch_set <label regex> <on|off>: scrolls to the row, flips it if needed, confirms the result.
 ui_switch_set() {
-    local st i
-    for i in 1 2 3 4 5 6; do
-        st=$(ui_switch "$1")
-        if [ -n "$st" ]; then
-            [ "${st%% *}" = "$2" ] && return 0
-            S input tap ${st#* }; sleep 2
-            ui_tap_if '^(OK|Confirm|Allow)$'
-            st=$(ui_switch "$1")
-            [ "${st%% *}" = "$2" ]; return $?
-        fi
-        S input swipe $SWIPE 300; sleep 1
-    done
-    return 1
+    local st
+    st=$(ui_seek ui_switch "$1") || return 1
+    [ "${st%% *}" = "$2" ] && return 0
+    S input tap ${st#* }; sleep 2
+    ui_tap_if '^(OK|Confirm|Allow)$'
+    st=$(ui_seek ui_switch "$1") || return 1
+    [ "${st%% *}" = "$2" ]
 }
 ui_switch_on() { ui_switch_set "$1" on; }
+
+# A run that stops halfway can leave the password dialog or the overflow menu open. Both sit
+# on top of the rows, so every tap aimed at a row behind them silently goes nowhere.
+dismiss_leftovers() {
+    local i
+    for i in 1 2 3; do
+        [ -z "$(ui_find '^Set password$')" ] && break
+        ui_tap_if '^Cancel$'
+        sleep 1
+    done
+    [ -z "$(ui_find '^Set permanent password$')" ] || { S input keyevent 4; sleep 1; }
+}
 
 auto_settings() {
     S monkey -p $RUSTDESK -c android.intent.category.LAUNCHER 1 >/dev/null 2>&1
     sleep 6
+    dismiss_leftovers
     ui_tap '^Settings&#10;Tab' || return 1
     ui_switch_on '^Start on boot' || return 1
     # The floating icon stuck to the screen edge; battery exemption + foreground service keep RustDesk alive without it.
     ui_switch_set '^Floating window' off || return 1
     ask_password
     ui_tap '^Share screen&#10;Tab' || return 1
-    ui_tap '^Start service$' || return 1
-    accept_scam_warning
-    accept_warning_ok
-    accept_start_now
+    # On a re-run the service is already up and the button reads "Stop service".
+    if [ -z "$(ui_find '^Stop service$')" ]; then
+        ui_tap '^Start service$' || return 1
+        accept_scam_warning
+        accept_warning_ok
+        accept_start_now
+    fi
     set_password || return 1
     return 0
 }
 
 # The unlabeled overflow button at the top-right of RustDesk's Share screen tab.
+# The app bar is a different height on every device, so measure the screen instead of
+# assuming a fixed bar: any unlabeled button in the top-right corner will do.
 ui_menu() {
-    local xy
-    xy=$(ui_dump | LC_ALL=C perl -0ne '
-        my ($bx, $by, $best) = (0, 0, -1);
+    local box
+    box=$(ui_dump | LC_ALL=C perl -0ne '
+        my ($bx1, $by1, $bx2, $by2, $best) = (0, 0, 0, 0, -1);
         while (/<node\b([^>]*)>/g) {
             my $a = $1;
             next unless $a =~ /\bclass="android\.widget\.Button"/ && $a =~ /\bcontent-desc=""/;
             my ($x1,$y1,$x2,$y2) = $a =~ /bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"/;
-            next unless $y2 <= 70;
-            if ($x2 > $best) { $best = $x2; $bx = ($x1+$x2)/2; $by = ($y1+$y2)/2; }
+            next unless defined $y2 && $y2 <= '"$((SH/5))"' && $x1 >= '"$((SW/2))"';
+            if ($x2 > $best) { $best = $x2; ($bx1, $by1, $bx2, $by2) = ($x1, $y1, $x2, $y2); }
         }
-        printf "%d %d\n", $bx, $by if $best >= 0;')
-    [ -n "$xy" ] || return 1
-    S input tap $xy; sleep 1.5
+        printf "%d %d %d %d\n", $bx1, $by1, $bx2, $by2 if $best >= 0;')
+    [ -n "$box" ] || return 1
+    S input tap $(tap_point $box); sleep 1.5
 }
 
-# Centers of the text fields on screen, one per line.
+# Tap-safe points inside the text fields, one per line. The keyboard usually covers the
+# lower field, so ask for a point it is not covering.
 ui_fields() {
     ui_dump | LC_ALL=C perl -0ne '
         while (/<node\b([^>]*)>/g) {
             my $a = $1;
             next unless $a =~ /\bclass="android\.widget\.EditText"/;
-            printf "%d %d\n", ($1+$3)/2, ($2+$4)/2 if $a =~ /bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"/;
-        }'
+            print "$1 $2 $3 $4\n" if $a =~ /bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"/;
+        }' | while read -r x1 y1 x2 y2; do tap_point $x1 $y1 $x2 $y2; done
 }
 
 # Types one character at a time so quotes, spaces and % reach the TV unchanged.
@@ -444,16 +563,20 @@ type_text() {
 
 # Permanent password, accept sessions by password only, use the permanent password.
 set_password() {
-    local f1 f2
+    local f1 f2 fields
+    # An earlier attempt can leave this dialog open, with the overflow menu hidden behind it.
+    dismiss_leftovers
     ui_menu || return 1
     ui_tap '^Set permanent password$' || return 1
     sleep 1
-    f1=$(ui_fields | sed -n 1p); f2=$(ui_fields | sed -n 2p)
+    fields=$(ui_fields)
+    f1=$(printf '%s\n' "$fields" | sed -n 1p)
+    f2=$(printf '%s\n' "$fields" | sed -n 2p)
     [ -n "$f1" ] && [ -n "$f2" ] || return 1
     S input tap $f1; sleep 0.5; type_text "$RD_PASSWORD"; sleep 0.5
     S input tap $f2; sleep 0.5; type_text "$RD_PASSWORD"; sleep 0.5
-    ui_tap_if '^OK$'
-    sleep 1
+    ui_tap_if '^OK$'   # tap_point moves the keyboard out of the way first, if it is covering OK
+    sleep 2
     [ -z "$(ui_find '^Set password$')" ] || { ui_tap_if '^Cancel$'; return 1; }
     ui_menu && ui_tap '^Accept sessions via password$' || return 1
     ui_menu && ui_tap '^Use permanent password$' || return 1
@@ -494,7 +617,9 @@ accept_start_now() {
     return 0
 }
 
-service_running() { S dumpsys activity services $RUSTDESK | grep -q "MainService"; }
+# MainService stays listed after it stops (something is still bound to it), so ask whether it
+# was actually started rather than just whether the name appears.
+service_running() { S dumpsys activity services $RUSTDESK | grep -qE 'startRequested=true|isForeground=true'; }
 
 DONE=0
 echo "  Working on the TV screen, please don't press anything on the remote..."
@@ -525,12 +650,12 @@ case "$R" in n|N) ;; *)
     echo "  Restarting, this takes about 2 minutes..."
     sleep 60
     for i in $(seq 1 24); do
-        case "$SERIAL" in *:*) NEW=$(mdns_addr "_adb-tls-connect"); [ -n "$NEW" ] && SERIAL="$NEW"; "$ADB" connect "$SERIAL" >/dev/null 2>&1;; esac
-        [ "$("$ADB" -s "$SERIAL" get-state 2>/dev/null)" = "device" ] && break
+        case "$SERIAL" in *:*) NEW=$(mdns_addr "_adb-tls-connect"); [ -n "$NEW" ] && SERIAL="$NEW"; "$ADB" connect "$SERIAL" </dev/null >/dev/null 2>&1;; esac
+        [ "$("$ADB" -s "$SERIAL" get-state </dev/null 2>/dev/null)" = "device" ] && break
         sleep 5
     done
     sleep 30
-    if [ "$("$ADB" -s "$SERIAL" get-state 2>/dev/null)" != "device" ]; then
+    if [ "$("$ADB" -s "$SERIAL" get-state </dev/null 2>/dev/null)" != "device" ]; then
         warn "Couldn't reconnect to check. Ask Chup support to try connecting with RustDesk."
     elif service_running; then
         ok "RustDesk came back by itself after the restart"
