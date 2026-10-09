@@ -271,6 +271,29 @@ fi
 A() { "$ADB" -s "$SERIAL" "$@" </dev/null; }
 S() { "$ADB" -s "$SERIAL" shell "$@" </dev/null; }
 
+# KEYCODE_WAKEUP: turns the screen on, and does nothing if it already is.
+wake_screen() { S input keyevent 224 >/dev/null 2>&1; }
+
+# A TV that sleeps its screen takes wireless debugging down with it - and comes back on a
+# different port - which kills a run half way through. Turn the screen on and hold it for as
+# long as we are working, then put the setting back exactly as we found it.
+STAY_ON_WAS=0
+restore_awake() { S settings put global stay_on_while_plugged_in "$STAY_ON_WAS" >/dev/null 2>&1; }
+keep_awake() {
+    local v
+    v=$(S settings get global stay_on_while_plugged_in 2>/dev/null | tr -d '\r')
+    case "$v" in ''|null|*[!0-9]*) v=0 ;; esac
+    STAY_ON_WAS=$v
+    S svc power stayon true >/dev/null 2>&1
+    trap restore_awake EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+}
+wake_screen
+sleep 1
+keep_awake
+ok "keeping the screen awake"
+
 MODEL=$(S getprop ro.product.model | tr -d '\r')
 ANDROID=$(S getprop ro.build.version.release | tr -d '\r')
 ABI=$(S getprop ro.product.cpu.abi | tr -d '\r')
@@ -623,6 +646,7 @@ service_running() { S dumpsys activity services $RUSTDESK | grep -qE 'startReque
 
 DONE=0
 echo "  Working on the TV screen, please don't press anything on the remote..."
+wake_screen
 if auto_settings && service_running; then DONE=1; ok "done automatically"; else warn "automatic setup didn't finish, please do these steps by hand"; fi
 
 if [ "$DONE" = 0 ]; then
@@ -641,6 +665,7 @@ ok "RustDesk is running, with remote control"
 
 # ---------- finish ----------
 bold "6/6  Finishing"
+wake_screen
 S monkey -p $CHUPTV -c android.intent.category.LEANBACK_LAUNCHER 1 >/dev/null 2>&1
 ok "Chup TV app opened"
 
