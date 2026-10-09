@@ -11,11 +11,40 @@ WORK="$HOME/.chup-tv-setup"
 LOCAL_CHUP_APK="${1:-}"
 
 bold() { printf '\n\033[1m%s\033[0m\n' "$1"; }
-ok()   { printf '  \033[32m✓\033[0m %s\n' "$1"; }
-warn() { printf '  \033[33m!\033[0m %s\n' "$1"; }
-die()  { printf '\n\033[31mStopped:\033[0m %s\n' "$1"; exit 1; }
-ask()  { local a; read -r -p "  $1 " a </dev/tty; echo "$a"; }
-pause() { read -r -p "  $1 Press Enter to continue..." _ </dev/tty; }
+ok()   { spinner_stop; printf '  \033[32m✓\033[0m %s\n' "$1"; }
+warn() { spinner_stop; printf '  \033[33m!\033[0m %s\n' "$1"; }
+die()  { spinner_stop; printf '\n\033[31mStopped:\033[0m %s\n' "$1"; exit 1; }
+ask()  { local a; spinner_stop; read -r -p "  $1 " a </dev/tty; echo "$a"; }
+pause() { spinner_stop; read -r -p "  $1 Press Enter to continue..." _ </dev/tty; }
+
+# Progress for the stretches where the script is talking to the TV and has nothing to print:
+# connecting, the settings run on the TV, and the reboot wait. Without it those minutes look
+# exactly like a hang. The elapsed seconds tick along so it's obvious the script is alive.
+# Output is one line rewritten in place, so anything that prints or prompts clears it first
+# (ok/warn/die/ask/pause above). Only runs on a real terminal, so piped or logged runs stay clean.
+SPIN_PID=""; SPIN_MSG=""
+spinner_start() {
+    [ -t 1 ] || return 0
+    spinner_stop
+    SPIN_MSG="$1"
+    (
+        F=( '|' '/' '-' '\' )
+        i=0; t0=$SECONDS
+        while :; do
+            printf '\r  %s %s (%ss)' "${F[i]}" "$SPIN_MSG" "$((SECONDS - t0))"
+            i=$(( (i + 1) % 4 ))
+            sleep 0.2
+        done
+    ) &
+    SPIN_PID=$!
+}
+spinner_stop() {
+    [ -n "$SPIN_PID" ] || return 0
+    kill "$SPIN_PID" 2>/dev/null
+    wait "$SPIN_PID" 2>/dev/null
+    SPIN_PID=""
+    printf '\r%*s\r' 64 "" 2>/dev/null
+}
 
 mkdir -p "$WORK" || die "cannot create $WORK"
 
@@ -31,11 +60,17 @@ password_ok() {
 RD_PASSWORD="${RUSTDESK_PASSWORD:-}"
 ask_password() {
     [ -n "$RD_PASSWORD" ] && { password_ok "$RD_PASSWORD" || die "RUSTDESK_PASSWORD doesn't meet RustDesk's rules"; return 0; }
+    # The prompt goes straight to the terminal, so hide the spinner while it's up and put it
+    # back afterwards -- the settings run on the TV continues for a while after this.
+    local had_spin="$SPIN_PID"
+    spinner_stop
     while :; do
         printf '  RustDesk permanent password: ' >/dev/tty
         IFS= read -r RD_PASSWORD </dev/tty || die "no password entered"
         password_ok "$RD_PASSWORD" && break
     done
+    [ -n "$had_spin" ] && spinner_start "$SPIN_MSG"
+    return 0
 }
 
 
@@ -107,18 +142,22 @@ scan_adb_port() {
 # connect_wait <addr> [tries]: connect and wait up to 2 minutes for the box to be ready.
 connect_wait() {
     local addr="$1" tries="${2:-40}" state i
+    spinner_start "connecting to $addr"
     case "$addr" in *:*) "$ADB" connect "$addr" </dev/null >/dev/null 2>&1;; esac
     for i in $(seq 1 "$tries"); do
         state=$("$ADB" -s "$addr" get-state </dev/null 2>&1)
-        [ "$state" = "device" ] && return 0
+        [ "$state" = "device" ] && { spinner_stop; return 0; }
         case "$state" in *unauthorized*)
-            [ "$i" = 1 ] && warn "On the TV, tick 'Always allow from this computer' and press OK on the debugging popup (waiting up to 2 minutes)."
+            [ "$i" = 1 ] && { warn "On the TV, tick 'Always allow from this computer' and press OK on the debugging popup (waiting up to 2 minutes)."; spinner_start "$SPIN_MSG"; }
             # A denied popup never comes back on the same connection: reconnect every 15s to ask again.
             case "$addr" in *:*) [ $((i % 5)) = 0 ] && "$ADB" disconnect "$addr" </dev/null >/dev/null 2>&1;; esac ;;
         esac
         sleep 3
         case "$addr" in *:*) "$ADB" connect "$addr" </dev/null >/dev/null 2>&1;; esac
     done
+    # Stop here rather than leave it to the caller: we're no longer connecting, so the
+    # message is stale by now.
+    spinner_stop
     return 1
 }
 
@@ -279,13 +318,16 @@ wake_screen() { S input keyevent 224 >/dev/null 2>&1; }
 # long as we are working, then put the setting back exactly as we found it.
 STAY_ON_WAS=0
 restore_awake() { S settings put global stay_on_while_plugged_in "$STAY_ON_WAS" >/dev/null 2>&1; }
+# One handler for both clean-ups: kill the progress spinner so it can't outlive the script on
+# your terminal, then put the TV's stay-on setting back the way we found it.
+on_exit() { spinner_stop; restore_awake; }
 keep_awake() {
     local v
     v=$(S settings get global stay_on_while_plugged_in 2>/dev/null | tr -d '\r')
     case "$v" in ''|null|*[!0-9]*) v=0 ;; esac
     STAY_ON_WAS=$v
     S svc power stayon true >/dev/null 2>&1
-    trap restore_awake EXIT
+    trap on_exit EXIT
     trap 'exit 130' INT
     trap 'exit 143' TERM
 }
@@ -647,6 +689,7 @@ service_running() { S dumpsys activity services $RUSTDESK | grep -qE 'startReque
 DONE=0
 echo "  Working on the TV screen, please don't press anything on the remote..."
 wake_screen
+spinner_start "setting up RustDesk on the TV"
 if auto_settings && service_running; then DONE=1; ok "done automatically"; else warn "automatic setup didn't finish, please do these steps by hand"; fi
 
 if [ "$DONE" = 0 ]; then
@@ -673,6 +716,7 @@ R=$(ask "Restart the TV now to check RustDesk comes back by itself? [Y/n]:")
 case "$R" in n|N) ;; *)
     A reboot
     echo "  Restarting, this takes about 2 minutes..."
+    spinner_start "waiting for the TV to come back"
     sleep 60
     for i in $(seq 1 24); do
         case "$SERIAL" in *:*) NEW=$(mdns_addr "_adb-tls-connect"); [ -n "$NEW" ] && SERIAL="$NEW"; "$ADB" connect "$SERIAL" </dev/null >/dev/null 2>&1;; esac
