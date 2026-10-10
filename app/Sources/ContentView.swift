@@ -345,7 +345,7 @@ struct ContentView: View {
                                     .foregroundStyle(device.pairing ? .orange : .accentColor)
                                 Text(device.addr)
                                     .font(.system(.callout, design: .monospaced))
-                                Text(device.pairing ? "Pairing screen open" : "Already paired")
+                                Text(device.hint)
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                                 Spacer(minLength: 12)

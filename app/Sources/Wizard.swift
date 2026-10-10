@@ -12,7 +12,8 @@ enum StepState: Equatable {
 enum StepKind {
     /// You do it on the remote; nothing in this app can see it, so it waits for you.
     case manual
-    /// adb's mDNS browser is watched until the box advertises itself.
+    /// The scan looks for two kinds of box: one offering Wireless debugging (adb finds it by
+    /// mDNS) and one with adb already open on port 5555 (the scan sweeps the subnet for it).
     case discover
     /// adb attaches — and asks for a pairing code first if the box insists.
     case connect
@@ -52,7 +53,7 @@ extension WizardStep {
                 "Scroll to \"Wireless debugging\" and switch it on.",
                 "Leave that screen open — it has the pairing code you will need next."
             ],
-            expect: "Press Scan to find TVs on this network. Pick one, type its pairing code, and it connects.",
+            expect: "Press Scan to find TVs on this network. Pair the one showing a pairing code, or press Connect on a box that is already set up.",
             kind: .discover
         ),
         WizardStep(
@@ -124,7 +125,7 @@ final class Wizard: ObservableObject {
     var tvSerial = ""
 
     /// Devices found by the last manual scan. Populated by Prep.scanDevices().
-    @Published var foundDevices: [MdnsEntry] = []
+    @Published var foundDevices: [DeviceEntry] = []
 
     /// Pairing in progress for a specific address.
     @Published var pairingAddr: String? = nil
@@ -186,7 +187,8 @@ final class Wizard: ObservableObject {
 
     // MARK: manual device scan + pairing (step 2)
 
-    /// One manual scan for TVs advertising Wireless debugging. Called when the person presses Scan.
+    /// One manual scan for TVs: those offering Wireless debugging, and those with a plain adb
+    /// daemon on port 5555. Called when the person presses Scan.
     func scanDevices(prep: Prep) {
         guard let adb = prep.adb else { return }
         foundDevices = []           // clear stale immediately so UI doesn't flicker old data
@@ -198,7 +200,12 @@ final class Wizard: ObservableObject {
             DispatchQueue.main.async {
                 guard let self = self else { return }
                 self.foundDevices = found
-                self.note = found.isEmpty ? "No TVs found. Make sure Wireless debugging is on and the pairing screen is open." : "Found \(found.count) TV(s). Press Pair next to yours."
+                if found.isEmpty {
+                    self.note = "No TVs found. Turn on Wireless debugging (leave its screen open), or check the box is on this Wi-Fi."
+                } else {
+                    let verb = found.contains { $0.pairing } ? "Pair" : "Connect"
+                    self.note = "Found \(found.count) TV\(found.count == 1 ? "" : "s"). Press \(verb) next to yours."
+                }
             }
         }
     }
@@ -241,28 +248,18 @@ final class Wizard: ObservableObject {
         }
     }
 
-    /// Connect to an already-paired TV (no pairing code needed).
+    /// Connect to an already-paired TV, or to one exposing a plain adb daemon on port 5555.
+    /// No pairing code needed for either.
     func connectOnly(addr: String, prep: Prep) {
         guard let adb = prep.adb else { return }
         busy = true
         note = "Connecting to \(addr)…"
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            let (_, out) = Prep.run(adb, ["connect", addr])
-            let lower = out.lowercased()
-            var ok = !(lower.contains("cannot connect") || lower.contains("failed to connect") || lower.contains("unable to connect"))
-            var serial = ""
-            if ok {
-                let (_, state) = Prep.run(adb, ["-s", addr, "get-state"])
-                if state.trimmingCharacters(in: .whitespacesAndNewlines) == "device" {
-                    serial = addr
-                } else {
-                    ok = false
-                }
-            }
+            let (serial, problem) = Prep.attach(adb, addr)
             DispatchQueue.main.async {
                 guard let self = self else { return }
                 self.busy = false
-                if ok {
+                if !serial.isEmpty {
                     self.foundDevices = []
                     let named = Prep.describe(adb, serial)
                     self.tvSerial = serial
@@ -274,9 +271,7 @@ final class Wizard: ObservableObject {
                     self.index = 3
                     self.states[3] = .active
                 } else {
-                    self.note = out.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                        ? "Connection failed. Try again or use pairing if the TV demands it."
-                        : out.trimmingCharacters(in: .whitespacesAndNewlines)
+                    self.note = problem
                 }
             }
         }

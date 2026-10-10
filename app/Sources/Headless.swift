@@ -45,14 +45,15 @@ enum Headless {
         dump("after scan")
         log("  foundDevices count = \(w.foundDevices.count)")
         for d in w.foundDevices {
-            log("  found: \(d.addr) pairing=\(d.pairing)")
+            log("  found: \(d.addr) source=\(d.source)")
         }
 
         if w.foundDevices.isEmpty {
             log("FAIL: no devices found")
             exit(1)
         }
-        let target = w.foundDevices.first!
+        // A pairing entry is the one a --code is for; otherwise connect to whatever came first.
+        let target = w.foundDevices.first { $0.pairing } ?? w.foundDevices.first!
 
         if target.pairing {
             log("  pairing with \(target.addr) code=\(code)")
@@ -74,18 +75,9 @@ enum Headless {
             }
         } else {
             log("  connecting to \(target.addr)")
-            // Call connect synchronously — same reason as scan above.
-            let (_, out) = Prep.run(prep.adb!, ["connect", target.addr])
-            let lower = out.lowercased()
-            let ok = !(lower.contains("cannot connect") || lower.contains("failed to connect") || lower.contains("unable to connect"))
-            var serial = ""
-            if ok {
-                let (_, state) = Prep.run(prep.adb!, ["-s", target.addr, "get-state"])
-                if state.trimmingCharacters(in: .whitespacesAndNewlines) == "device" {
-                    serial = target.addr
-                }
-            }
-            if ok && !serial.isEmpty {
+            // Same synchronous call the window's Connect button makes.
+            let (serial, problem) = Prep.attach(prep.adb!, target.addr)
+            if !serial.isEmpty {
                 w.foundDevices = []
                 let named = Prep.describe(prep.adb!, serial)
                 w.tvSerial = serial
@@ -96,9 +88,7 @@ enum Headless {
                 w.index = 3
                 w.states[3] = .active
             } else {
-                w.note = out.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                    ? "Connection failed."
-                    : out.trimmingCharacters(in: .whitespacesAndNewlines)
+                w.note = problem.isEmpty ? "Connection failed." : problem
             }
         }
         dump("after pair/connect")
