@@ -774,7 +774,9 @@ type_text() {
     done
 }
 
-# Permanent password, accept sessions by password only, use the permanent password.
+# Permanent password, accept sessions by password only, and accept BOTH the one-time password
+# and the permanent one. Tapping "Use permanent password" instead would switch one-time
+# password (OTP) login off, and support sometimes needs to read the OTP off the TV screen.
 set_password() {
     local f1 f2 fields
     # An earlier attempt can leave this dialog open, with the overflow menu hidden behind it.
@@ -792,7 +794,7 @@ set_password() {
     sleep 2
     [ -z "$(ui_find '^Set password$')" ] || { ui_tap_if '^Cancel$'; return 1; }
     ui_menu && ui_tap '^Accept sessions via password$' || return 1
-    ui_menu && ui_tap '^Use permanent password$' || return 1
+    ui_menu && ui_tap '^Use both passwords$' || return 1
     # The dialog-closing check above is what proves the password was written, and a correct
     # password otherwise gives no sign that it worked.
     ok "Permanent password is set"
@@ -849,7 +851,7 @@ if [ "$DONE" = 0 ]; then
     echo "    1. Settings > turn ON 'Start on boot' and turn OFF 'Floating window'"
     echo "    2. Open the 'Share screen' tab and press 'Start service'"
     echo "    3. Top-right menu > 'Set permanent password' (the one you typed above)"
-    echo "    4. Top-right menu > 'Accept sessions via password', then 'Use permanent password'"
+    echo "    4. Top-right menu > 'Accept sessions via password', then 'Use both passwords'"
     pause "When all four are done,"
     service_running || die "RustDesk service is not running yet. Press 'Start service' in RustDesk, then run this again."
 fi
@@ -866,9 +868,11 @@ chup_signin() {
     S monkey -p $CHUPTV -c android.intent.category.LEANBACK_LAUNCHER 1 >/dev/null 2>&1
 
     # Let it land before reading the screen. Either login control means "not signed in yet";
-    # neither appearing after this long means it went straight to the home screen.
+    # neither appearing after this long means it went straight to the home screen. A cold
+    # start on these boxes can take half a minute, so keep looking that long rather than
+    # conclude "signed in" and leave the login screen sitting there for a person to click.
     ready=""
-    for wait in 1 2 3 4 5 6; do
+    for wait in 1 2 3 4 5 6 7 8 9 10 11 12; do
         sleep 2
         if [ -n "$(ui_find '^Login$')" ] || [ -n "$(ui_find '^Login with OTP$')" ]; then
             ready=1; break
@@ -878,11 +882,17 @@ chup_signin() {
 
     # Both screens carry the words "Login with OTP" -- a button on the email screen, the
     # heading on the OTP screen -- so that string tells them apart not at all. The OTP screen
-    # is the one with an "OTP" label of its own and a single field.
-    if [ -z "$(ui_find '^OTP$')" ]; then
-        ui_tap '^Login with OTP$' || return 1
-        sleep 3
-    fi
+    # is the one with an "OTP" label of its own and a single field. Choose it here so nobody
+    # has to click it on the TV: tap, look for the OTP screen, and tap again if the first
+    # tap landed while the app was still animating into place.
+    for attempt in 1 2 3; do
+        [ -n "$(ui_find '^OTP$')" ] && break
+        ui_tap '^Login with OTP$' || break
+        for wait in 1 2 3 4 5; do
+            [ -n "$(ui_find '^OTP$')" ] && break
+            sleep 1
+        done
+    done
     [ -n "$(ui_find '^OTP$')" ] || return 1
 
     for attempt in 1 2 3; do

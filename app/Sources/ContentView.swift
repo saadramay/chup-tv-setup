@@ -335,12 +335,6 @@ struct ContentView: View {
                     }
                     Spacer(minLength: 12)
                 }
-                if !wizard.note.isEmpty {
-                    Text(wizard.note)
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
                 if !wizard.foundDevices.isEmpty {
                     VStack(alignment: .leading, spacing: 8) {
                         Text("TVs found on this network:")
@@ -390,12 +384,6 @@ struct ContentView: View {
                                 ProgressView().controlSize(.small)
                             }
                         }
-                        if !wizard.note.isEmpty {
-                            Text(wizard.note)
-                                .font(.caption)
-                                .foregroundStyle(.orange)
-                                .fixedSize(horizontal: false, vertical: true)
-                        }
                     }
                     .padding(12)
                     .background(Color.orange.opacity(0.1))
@@ -434,21 +422,18 @@ struct ContentView: View {
                         .font(.callout)
                         .fixedSize(horizontal: false, vertical: true)
                     HStack(spacing: 8) {
-                        Group {
-                            if prompt.secure {
-                                SecureField("Type here", text: $answer)
-                            } else {
-                                TextField("Type your answer, then press Enter", text: $answer)
-                            }
-                        }
-                        .textFieldStyle(.roundedBorder)
-                        .focused($promptFocused)
-                        .onSubmit { send() }
+                        // Plain text even for passwords: the person typing must be able to see
+                        // what they type on an unfamiliar machine. Secrecy lives in the log --
+                        // Runner.submit never writes a secure answer to it.
+                        TextField(prompt.secure ? "Type here" : "Type your answer, then press Enter", text: $answer)
+                            .textFieldStyle(.roundedBorder)
+                            .focused($promptFocused)
+                            .onSubmit { send() }
                         Button("Send", action: send)
                             .keyboardShortcut(.return, modifiers: .command)
                     }
                     if prompt.secure {
-                        Text("Never written to the log. Plain keyboard characters, at least 8 characters where a password is asked for.")
+                        Text("Shown in plain text so you can check it, but never written to the log. Plain keyboard characters, at least 8 characters where a password is asked for.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
