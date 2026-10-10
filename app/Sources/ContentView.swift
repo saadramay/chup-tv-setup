@@ -223,11 +223,53 @@ struct ContentView: View {
             stepBody
             if runner.prompt != nil { promptBox }
             if let outcome = runner.outcome { outcomeRow(outcome) }
+            if runner.rustDeskID != nil { idCard }
             logBox
             footer
         }
         .padding(20)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    /// The ID, in the largest type the window has. Chup support asks for exactly this number
+    /// and nothing else, so it is worth more than the whole log put together: it gets its own
+    /// card, its own copy button, and type that can be read across a room.
+    private var idCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Label("Read this out to Chup support", systemImage: "checkmark.circle.fill")
+                .font(.callout.bold())
+                .foregroundStyle(.green)
+
+            Text(groupedID(runner.rustDeskID ?? ""))
+                .font(.system(size: 64, weight: .bold, design: .monospaced))
+                .kerning(6)
+                .lineLimit(1)
+                .minimumScaleFactor(0.4)
+                .foregroundStyle(.primary)
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .center)
+                .padding(.vertical, 14)
+
+            HStack(spacing: 12) {
+                Button {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(runner.rustDeskID ?? "", forType: .string)
+                } label: {
+                    Label("Copy ID", systemImage: "doc.on.doc")
+                }
+                .keyboardShortcut("c", modifiers: [.command])
+
+                Text("This box's RustDesk ID. It stays the same, so Chup support can use it again next time.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer(minLength: 0)
+            }
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.green.opacity(0.08))
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Color.green.opacity(0.35)))
     }
 
     @ViewBuilder

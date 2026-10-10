@@ -939,9 +939,50 @@ else
     pause "When the home screen is showing,"
 fi
 
+# The RustDesk ID, read off the TV's own screen. RustDesk puts it in an accessibility label
+# at the top of its service tab -- "Your device / ID / 123 456 789 / ... / Ready" -- which is
+# readable without root, unlike anything in the app's private storage. Prints the digits only.
+# Returns 1 when the screen will not say it, so the caller can point at the TV instead.
+rustdesk_id() {
+    local dump id i tab
+    S monkey -p $RUSTDESK -c android.intent.category.LAUNCHER 1 >/dev/null 2>&1
+    sleep 5
+    # The label lives on the service tab, which is where the setup above left it. Some builds
+    # show the ID on the connection tab instead, so look on both, alternating on every pass.
+    for i in 1 2 3 4 5 6 7 8; do
+        dump=$(ui_dump)
+        id=$(printf '%s' "$dump" | LC_ALL=C perl -0ne '
+            while (/<node\b([^>]*)>/g) {
+                my $a = $1;
+                for my $v ($a =~ /\b(?:content-desc|text)="([^"]*)"/g) {
+                    # The label is "ID" on a line of its own, with the number on the next.
+                    if ($v =~ /(?:^|&#10;)ID&#10;\s*([0-9][0-9 ]{4,})/) {
+                        my $n = $1; $n =~ s/\D//g; print $n and exit;
+                    }
+                }
+            }')
+        [ -n "$id" ] && { printf '%s\n' "$id"; return 0; }
+        # One tab at a time: an alternation here would match the same (first) tab every pass
+        # and never reach the other one.
+        if [ $((i % 2)) -eq 1 ]; then tab='^Share screen&#10;Tab'; else tab='^Connection&#10;Tab'; fi
+        ui_tap_if "$tab" >/dev/null 2>&1
+        sleep 2
+    done
+    return 1
+}
+
+# 1835216533 -> "1 835 216 533", the way RustDesk writes it on the TV, so it reads aloud in
+# threes. Anything not a digit is already gone by here.
+group_id() {
+    printf '%s' "$1" | LC_ALL=C sed -E 's/([0-9])([0-9]{3})([0-9]{3})([0-9]+)$/ \1 \2 \3 \4/; s/^ //'
+}
+
 # ---------- finish ----------
 bold "7/7  Finishing"
 wake_screen
+# Read the ID before Chup TV takes the screen: it is the one thing Chup support needs, and the
+# whole setup is wasted if it has to be hunted for afterwards.
+RUSTDESK_ID=$(rustdesk_id) || RUSTDESK_ID=""
 S monkey -p $CHUPTV -c android.intent.category.LEANBACK_LAUNCHER 1 >/dev/null 2>&1
 ok "Chup TV app opened"
 
@@ -975,4 +1016,14 @@ case "$R" in n|N|no|No|NO) ;; *)
     ;;
 esac
 
-bold "All done. Read out the RustDesk ID shown on the TV to Chup support."
+# The ID is the whole point of the last screen, so it gets the largest type a terminal has.
+# The app reads the control line and shows it even bigger.
+if [ -n "$RUSTDESK_ID" ]; then
+    printf '::rustdesk-id %s\n' "$RUSTDESK_ID" >&2
+    bold "All done. Read this RustDesk ID out to Chup support:"
+    printf '\n\033[1m %s\033[0m\n\n' "$(group_id "$RUSTDESK_ID")"
+    echo "  It is also on the TV: open RustDesk, top of the Share screen tab."
+else
+    bold "All done. Read out the RustDesk ID shown on the TV to Chup support."
+    echo "  (Open RustDesk on the TV; the ID is at the top of the Share screen tab.)"
+fi

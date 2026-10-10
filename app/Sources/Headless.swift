@@ -178,6 +178,20 @@ enum Headless {
         check("ordinary line ignored", describe("  ✓ adb ready"), "")
         check("8/7 ignored", describe("8/7  nonsense"), "")
 
+        // The ID read off the TV: grouped the way RustDesk writes it, and parsed out of the
+        // script's control line.
+        check("ID grouped in threes", groupedID("1835216533"), "1 835 216 533")
+        check("ID grouped, 9 digits", groupedID("123456789"), "123 456 789")
+        check("short ID untouched", groupedID("12345"), "12345")
+        check("empty ID untouched", groupedID(""), "")
+
+        let runner2 = Runner()
+        runner2.consumeStderrForTesting(["::rustdesk-id 1835216533"])
+        check("rustdesk-id parsed", runner2.rustDeskID ?? "-", "1835216533")
+        // Anything not a digit on the control line is dropped rather than shown to support.
+        runner2.consumeStderrForTesting(["::rustdesk-id 183 521 6533!"])
+        check("rustdesk-id keeps digits only", runner2.rustDeskID ?? "-", "1835216533")
+
         print("\n  \(pass) passed, \(fail) failed")
         return fail == 0
     }

@@ -15,19 +15,24 @@ are, and the right-hand side shows what to do and what the app is doing about it
 1. **Turn on Developer options** — Settings > About > tap **Android TV OS build** 7 times. This is
    the one step the app cannot see from here, so it waits for you.
 2. **Turn on Wireless debugging** — Settings > System > Developer options > **Wireless debugging**.
-   The app watches adb's mDNS browser and moves on the instant the box appears, so there is no
-   guessing whether it worked.
+   Press **Scan** and the app looks two ways at once: adb's mDNS browser for boxes offering
+   Wireless debugging, and a sweep of this Mac's subnet for a box with adb already open on port
+   5555. Older boxes have no Wireless debugging at all, so the sweep is the half that finds them.
+   Every box it finds gets its own row with a **Pair** button (the TV is showing a pairing code)
+   or a **Connect** button (nothing more is needed).
 
 **Then put the remote down:**
 
-3. **Connect to the TV** — attaches by itself. Boxes that insist on pairing first (Xiaomi and
-   similar) get a code field here: type the six digits the TV is showing.
+3. **Connect to the TV** — attaches to whichever box you picked.
 4. **Install the apps** — downloads and installs Chup TV and RustDesk and grants the permissions.
 5. **Turn on remote support** — Start on boot, the permanent password (typed into a field here,
    never onto the TV) and the share-screen service.
 6. **Sign in to Chup TV** — asks for the 6-digit code from the dashboard, types it in and checks
    the home screen came up.
-7. **Restart and check** — reboots and waits for RustDesk to come back by itself.
+7. **Restart and check** — reboots and waits for RustDesk to come back by itself. Then the
+   box's **RustDesk ID** is read off the TV's own screen and shown in the largest type the window
+   has, with a **Copy ID** button. That is the number Chup support needs, and it never changes
+   for a given box.
 
 From step 4 on it runs unattended, streaming into a collapsible **Activity log** at the bottom of
 the window. Whatever it cannot finish is marked red in the rail with the reason, and **Run again**

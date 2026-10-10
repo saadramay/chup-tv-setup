@@ -53,6 +53,18 @@ func stripANSI(_ text: String) -> String {
     return ansiRegex.stringByReplacingMatches(in: flat, options: [], range: range, withTemplate: "")
 }
 
+/// 1835216533 -> "1 835 216 533", the way RustDesk writes the ID on the TV, so it reads aloud
+/// in threes. Anything shorter than a whole ID passes through untouched.
+func groupedID(_ digits: String) -> String {
+    guard digits.count > 6 else { return digits }
+    var out = ""
+    for (i, ch) in digits.enumerated() {
+        if i > 0 && (digits.count - i) % 3 == 0 { out.append(" ") }
+        out.append(ch)
+    }
+    return out
+}
+
 // MARK: - Runner
 
 /// Runs tv-setup.sh and turns its stdout/stderr into a log, a progress step and prompts.
@@ -66,6 +78,10 @@ final class Runner: ObservableObject {
     /// `::connected <serial>`: the script telling us the TV actually attached. Not a guess
     /// from mDNS -- the box answered.
     @Published var connectedSerial: String? = nil
+    /// `::rustdesk-id <digits>`: the ID read off the TV's own screen at the end of setup.
+    /// This is the one thing Chup support needs, so it gets its own state and the biggest
+    /// type in the window rather than being a line in the log to hunt for.
+    @Published var rustDeskID: String? = nil
     @Published var restartAfter = true
     @Published var fetchLatest = true
 
@@ -100,6 +116,7 @@ final class Runner: ObservableObject {
         prompt = nil
         outcome = nil
         connectedSerial = nil
+        rustDeskID = nil
         cancelled = false
         inputExhausted = false
         isRunning = true
@@ -317,7 +334,7 @@ final class Runner: ObservableObject {
                 self.stdinHandle = nil
                 self.process = nil
                 if finished.terminationStatus == 0 {
-                    self.finish(.success("Setup finished. Read the RustDesk ID off the TV to Chup support."))
+                    self.finish(.success("Setup finished."))
                 } else if self.cancelled {
                     self.finish(.failure("Cancelled before setup finished."))
                 } else {
@@ -368,6 +385,11 @@ final class Runner: ObservableObject {
                 // A control line, not something anybody needs to read in the log: it is how
                 // the rail learns the TV attached, and mDNS could never have told it.
                 connectedSerial = String(raw.dropFirst(12))
+            } else if raw.hasPrefix("::rustdesk-id ") {
+                // The same, for the ID: read off the TV's screen by the script, shown by the
+                // window. A control line, so it never lands in the log either.
+                let id = String(raw.dropFirst(14)).filter { $0.isNumber }
+                if !id.isEmpty { rustDeskID = id }
             } else {
                 let line = stripANSI(raw)
                 guard !line.isEmpty else { continue }
@@ -376,8 +398,11 @@ final class Runner: ObservableObject {
         }
     }
 
-    func step(from line: String) -> (Int, String)? {
-        let range = NSRange(line.startIndex..., in: line)
+    /// Feeds stderr lines through the same parser the pipes use, so control-line handling can
+    /// be tested without a running script.
+    func consumeStderrForTesting(_ lines: [String]) { consumeStderr(lines) }
+
+    func step(from line: String) -> (Int, String)? {        let range = NSRange(line.startIndex..., in: line)
         guard let match = stepRegex.firstMatch(in: line, options: [], range: range),
               let numberRange = Range(match.range(at: 1), in: line),
               let titleRange = Range(match.range(at: 2), in: line),
