@@ -441,6 +441,30 @@ fi
 A() { "$ADB" -s "$SERIAL" "$@" </dev/null; }
 S() { "$ADB" -s "$SERIAL" shell "$@" </dev/null; }
 
+# Install an APK over whatever the box already has. A box can be running a newer build than
+# this setup carries -- somebody installed one by hand, or the manifest is behind -- and adb
+# then refuses with VERSION_DOWNGRADE. That is not a reason to stop: what this step is for is
+# the app being installed and working, and a newer app still is. Aborting threw away a working
+# setup, and the box's login, over a version number.
+install_app() {
+    local pkg=$1 apk=$2 label=$3 out have
+    out=$(A install -r -g "$apk" 2>&1)
+    case "$out" in
+    *Success*)
+        return 0
+        ;;
+    *VERSION_DOWNGRADE*)
+        have=$(S dumpsys package "$pkg" 2>/dev/null | grep -m1 versionName | tr -d '\r' | sed 's/.*versionName=//; s/ .*//')
+        [ -n "$have" ] || die "$label install failed ($(printf '%s' "$out" | tr -d '\r' | tail -1))"
+        warn "$label: box is on $have, newer than this setup carries -- keeping it"
+        return 0
+        ;;
+    esac
+    # The real adb line, rather than the one-line "install failed" the old `| grep -q Success`
+    # swallowed: [INSTALL_FAILED_...] is the whole reason it failed.
+    die "$label install failed ($(printf '%s' "$out" | tr -d '\r' | tail -1))"
+}
+
 # KEYCODE_WAKEUP: turns the screen on, and does nothing if it already is.
 wake_screen() { S input keyevent 224 >/dev/null 2>&1; }
 
@@ -501,9 +525,9 @@ ok "Chup TV app"
 
 # ---------- install + grants ----------
 bold "4/7  Installing and granting permissions"
-A install -r -g "$WORK/chup-tv.apk" | grep -q Success || die "Chup TV app install failed"
+install_app $CHUPTV "$WORK/chup-tv.apk" "Chup TV app"
 ok "Chup TV app installed"
-A install -r -g "$WORK/rustdesk.apk" | grep -q Success || die "RustDesk install failed"
+install_app $RUSTDESK "$WORK/rustdesk.apk" "RustDesk"
 ok "RustDesk installed"
 
 S appops set $RUSTDESK PROJECT_MEDIA allow
