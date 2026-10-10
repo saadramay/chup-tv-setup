@@ -9,13 +9,74 @@ RUSTDESK=com.carriez.flutter_hbb
 CHUPTV=com.chup.tvapp
 WORK="$HOME/.chup-tv-setup"
 LOCAL_CHUP_APK="${1:-}"
+# The setup app guides the pairing and connecting itself, so it only needs this script up far
+# enough to have adb in place. `bash tv-setup.sh --prep` does that and stops.
+PREP_ONLY=""
+if [ "$LOCAL_CHUP_APK" = "--prep" ]; then PREP_ONLY=1; LOCAL_CHUP_APK=""; fi
 
 bold() { printf '\n\033[1m%s\033[0m\n' "$1"; }
 ok()   { spinner_stop; printf '  \033[32m✓\033[0m %s\n' "$1"; }
 warn() { spinner_stop; printf '  \033[33m!\033[0m %s\n' "$1"; }
 die()  { spinner_stop; printf '\n\033[31mStopped:\033[0m %s\n' "$1"; exit 1; }
-ask()  { local a; spinner_stop; read -r -p "  $1 " a </dev/tty; echo "$a"; }
-pause() { spinner_stop; read -r -p "  $1 Press Enter to continue..." _ </dev/tty; }
+# GUI mode (CHUP_UI=1, set by the Chup Setup app): there is no controlling terminal, so a
+# question is emitted to stderr as a '::ask [secure] <question>' control line and the answer
+# comes back on stdin. stdout stays reserved for the log, which the app renders as-is.
+# The app never logs either the question or the answer, so passwords stay off the screen.
+ask()  {
+    local a
+    spinner_stop
+    if [ -n "${CHUP_UI:-}" ]; then
+        printf '::ask %s\n' "$1" >&2
+        IFS= read -r a || {
+            # The app closed our stdin, so no answer can ever arrive. Stop rather than loop on
+            # empty answers. $$ is this script even inside $( ... ).
+            printf 'Stopped: the app is no longer sending answers\n' >&2
+            kill -TERM $$
+            return 1
+        }
+        printf '%s\n' "$a"
+        return 0
+    fi
+    read -r -p "  $1 " a </dev/tty \
+        || { printf 'Stopped: nothing to read the answer from (set CHUP_UI=1 when running inside an app)\n' >&2; return 1; }
+    echo "$a"
+}
+pause() {
+    local a
+    spinner_stop
+    if [ -n "${CHUP_UI:-}" ]; then
+        printf '::ask %s\n' "$1 Press Enter to continue..." >&2
+        IFS= read -r a || {
+            # Not being able to continue is not the same as having continued: say so and stop.
+            printf 'Stopped: the app is no longer sending answers\n'
+            kill -TERM $$
+            return 1
+        }
+        return 0
+    fi
+    read -r -p "  $1 Press Enter to continue..." a </dev/tty \
+        || { printf 'Stopped: nothing to read the answer from (set CHUP_UI=1 when running inside an app)\n' >&2; return 1; }
+}
+
+# A secret the log must never see. Same shape as ask(), but marked 'secure' on the control
+# line so the app renders a password field and writes neither the question nor the answer down.
+ask_secure() {
+    local a
+    spinner_stop
+    if [ -n "${CHUP_UI:-}" ]; then
+        printf '::ask secure %s\n' "$1" >&2
+        IFS= read -r a || {
+            printf 'Stopped: the app is no longer sending answers\n' >&2
+            kill -TERM $$
+            return 1
+        }
+        printf '%s\n' "$a"
+        return 0
+    fi
+    read -r -p "  $1 " a </dev/tty \
+        || { printf 'Stopped: nothing to read the answer from (set CHUP_UI=1 when running inside an app)\n' >&2; return 1; }
+    echo "$a"
+}
 
 # Progress for the stretches where the script is talking to the TV and has nothing to print:
 # connecting, the settings run on the TV, and the reboot wait. Without it those minutes look
@@ -65,8 +126,13 @@ ask_password() {
     local had_spin="$SPIN_PID"
     spinner_stop
     while :; do
-        printf '  RustDesk permanent password: ' >/dev/tty
-        IFS= read -r RD_PASSWORD </dev/tty || die "no password entered"
+        if [ -n "${CHUP_UI:-}" ]; then
+            printf '::ask secure %s\n' "RustDesk permanent password" >&2
+            IFS= read -r RD_PASSWORD || die "no password entered"
+        else
+            printf '  RustDesk permanent password: ' >/dev/tty
+            IFS= read -r RD_PASSWORD </dev/tty || die "no password entered"
+        fi
         password_ok "$RD_PASSWORD" && break
     done
     [ -n "$had_spin" ] && spinner_start "$SPIN_MSG"
@@ -75,7 +141,7 @@ ask_password() {
 
 
 # ---------- adb ----------
-bold "1/6  Getting adb"
+bold "1/7  Getting adb"
 # The manifest carries every download URL (adb and both apps), so read it up front.
 # If it can't be refreshed we keep the copy from an earlier run rather than failing here.
 MANIFEST="$WORK/remote-support.json"
@@ -105,9 +171,11 @@ else
 fi
 "$ADB" start-server </dev/null >/dev/null 2>&1
 ok "adb ready"
+# Stopped here on purpose: everything below wants a TV that is already reachable.
+[ -z "$PREP_ONLY" ] || exit 0
 
 # ---------- connect ----------
-bold "2/6  Connecting to the TV box"
+bold "2/7  Connecting to the TV box"
 SERIAL=""
 
 mdns_addr()  { "$ADB" mdns services </dev/null 2>/dev/null | awk -v t="$1" '$0 ~ t {print $NF; exit}'; }
@@ -195,92 +263,151 @@ pair_wireless() {
     STATE="new"
 }
 
-echo "  Looking for devices on this Mac and this Wi-Fi..."
-# Everything adb already sees (USB, network, emulator), ready or not.
-LIST=$("$ADB" devices </dev/null | awk 'NR>1 && $1!="*" && NF>=2 {print $1, $2}')
-# Plus boxes on this Wi-Fi with adb already open (port 5555): those need no pairing.
-for ip in $(scan_adb_port); do
-    echo "$LIST" | awk -v a="$ip:5555" '$1==a {found=1} END {exit !found}' \
-        || LIST="$LIST
+# adb's mDNS browser sometimes returns only one service type per call, so a single
+# quick check often misses the pairing service. Run a few times and keep the fullest.
+mdns_quick() {
+    local i best=""
+    MDNS_CACHE=""
+    for i in 1 2 3 4; do
+        local out
+        out=$("$ADB" mdns services </dev/null 2>/dev/null)
+        if printf '%s\n' "$out" | grep -q "adb-tls"; then
+            # Count adb-tls lines; keep the richest response
+            local n_new n_best
+            n_new=$(printf '%s\n' "$out" | grep -c "adb-tls")
+            n_best=$(printf '%s\n' "$best" | grep -c "adb-tls")
+            if [ "$n_new" -gt "$n_best" ]; then
+                best="$out"
+            fi
+        fi
+        sleep 1
+    done
+    MDNS_CACHE="$best"
+    return 0
+}
+
+# Everything this Mac could reach: what adb already has attached, boxes with adb open on
+# port 5555, and boxes offering Wireless debugging over mDNS. Sets LIST and COUNT.
+OPEN5555=$(scan_adb_port)
+find_devices() {
+    # Everything adb already sees (USB, network, emulator), ready or not.
+    LIST=$("$ADB" devices </dev/null | awk 'NR>1 && $1!="*" && NF>=2 {print $1, $2}')
+    # Plus boxes on this Wi-Fi with adb already open (port 5555): those need no pairing.
+    for ip in $OPEN5555; do
+        echo "$LIST" | awk -v a="$ip:5555" '$1==a {found=1} END {exit !found}' \
+            || LIST="$LIST
 $ip:5555 new"
-done
-# Plus devices offering Wireless debugging (Xiaomi, Google TV), which adb finds by mDNS.
-# A pairing service means that TV's pairing screen is open; it wins, because a connect
-# service only works on a device this Mac is already paired with.
-mdns_refresh
-PAIRING_IPS=""
-for a in $(mdns_addrs "_adb-tls-pairing"); do
-    PAIRING_IPS="$PAIRING_IPS ${a%:*}"
-    case "$LIST" in *"$a "*) ;; *) LIST="$LIST
+    done
+    # Plus devices offering Wireless debugging (Xiaomi, Google TV), which adb finds by mDNS.
+    # A pairing service means that TV's pairing screen is open; it wins, because a connect
+    # service only works on a device this Mac is already paired with.
+    mdns_quick
+    PAIRING_IPS=""
+    for a in $(mdns_addrs "_adb-tls-pairing"); do
+        PAIRING_IPS="$PAIRING_IPS ${a%:*}"
+        case "$LIST" in *"$a "*) ;; *) LIST="$LIST
 $a pairing";; esac
-done
-for a in $(mdns_addrs "_adb-tls-connect"); do
-    case " $PAIRING_IPS " in *" ${a%:*} "*) continue;; esac
-    echo "$LIST" | awk -v x="$a" '$1==x {found=1} END {exit !found}' \
-        || LIST="$LIST
+    done
+    for a in $(mdns_addrs "_adb-tls-connect"); do
+        case " $PAIRING_IPS " in *" ${a%:*} "*) continue;; esac
+        echo "$LIST" | awk -v x="$a" '$1==x {found=1} END {exit !found}' \
+            || LIST="$LIST
 $a paired"
-done
-# No blank lines, so list position N is line N.
-LIST=$(printf '%s\n' "$LIST" | grep -v '^[[:space:]]*$')
-COUNT=$(printf '%s\n' "$LIST" | grep -c .)
+    done
+    # No blank lines, so list position N is line N.
+    LIST=$(printf '%s\n' "$LIST" | grep -v '^[[:space:]]*$')
+    COUNT=$(printf '%s\n' "$LIST" | grep -c .)
+}
 
 ADDR=""; STATE=""
-if [ -n "$LIST" ]; then
-    echo "  Devices found:"
-    N=0
-    while read -r addr state; do
-        [ -n "$addr" ] || continue
-        N=$((N+1))
-        case "$addr" in
-            emulator-*) kind="emulator";;
-            *:*)        kind="network";;
-            *)          kind="USB";;
-        esac
-        case "$state" in
-            device)
-                model=$("$ADB" -s "$addr" shell getprop ro.product.model 2>/dev/null </dev/null | tr -d '\r')
-                ver=$("$ADB" -s "$addr" shell getprop ro.build.version.release 2>/dev/null </dev/null | tr -d '\r')
-                label="$model, Android $ver";;
-            new)     label="found on this Wi-Fi";;
-            paired)  label="wireless debugging";;
-            pairing) label="wireless debugging, type its pairing code";;
-            *)       label="$state: press Allow on the TV";;
-        esac
-        printf '    %d. %-22s %-28s (%s)\n' "$N" "$addr" "$label" "$kind"
-    done < <(echo "$LIST")
-
-    # Enter only picks when there is a single device, so nobody sets up the wrong one by accident.
-    while :; do
-        if [ "$COUNT" = 1 ]; then
-            PICK=$(ask "Is this the TV? (Enter = yes, or 'pair' to use a pairing code)")
-            [ -z "$PICK" ] && PICK=1
-        else
-            PICK=$(ask "Which one is this TV? Type its number (or 'pair' to use a pairing code)")
-        fi
-        [ -n "$PICK" ] && break
-        warn "please type the number of the TV"
-    done
-    case "$PICK" in
-        p|pair) pair_wireless;;
-        n|N|no|No) [ "$COUNT" = 1 ] && pair_wireless;;
-    esac
+# The setup app chose and connected the TV in its own step and hands us that serial, so
+# asking "which one is this TV?" here would only ask again what step 2 already answered.
+# Trust it only while the box still answers: if it has dropped off, look for it the normal way.
+if [ -n "${CHUP_SERIAL:-}" ]; then
+    if [ "$("$ADB" -s "$CHUP_SERIAL" get-state </dev/null 2>/dev/null)" = "device" ] \
+        || connect_wait "$CHUP_SERIAL" 4; then
+        ADDR="$CHUP_SERIAL"
+        STATE="device"
+    fi
 fi
 
 if [ -z "$ADDR" ]; then
-    if [ -z "$LIST" ]; then
-        echo "  No device found."
-        pair_wireless
-    else
+    echo "  Looking for devices on this Mac and this Wi-Fi..."
+    find_devices
+    # The first look is often too early -- somebody may still be switching Wireless debugging
+    # on. Keep looking for a couple of minutes rather than call the network empty and fall
+    # through to the pairing fallback.
+    WAIT=0
+    while [ -z "$LIST" ] && [ "$WAIT" -lt 120 ]; do
+        [ "$WAIT" = 0 ] || echo "  Still looking for a TV... turn Wireless debugging on and leave this screen open. (${WAIT}s)"
+        sleep 3
+        WAIT=$((WAIT + 3))
+        find_devices
+    done
+
+    if [ -n "$LIST" ]; then
+        echo "  Devices found:"
+        N=0
+        first_addr=""
+        first_label=""
+        while read -r addr state; do
+            [ -n "$addr" ] || continue
+            N=$((N+1))
+            case "$addr" in
+                emulator-*) kind="emulator";;
+                *:*)        kind="network";;
+                *)          kind="USB";;
+            esac
+            case "$state" in
+                device)
+                    model=$("$ADB" -s "$addr" shell getprop ro.product.model 2>/dev/null </dev/null | tr -d '\r')
+                    ver=$("$ADB" -s "$addr" shell getprop ro.build.version.release 2>/dev/null </dev/null | tr -d '\r')
+                    label="$model, Android $ver";;
+                new)     label="found on this Wi-Fi";;
+                paired)  label="wireless debugging";;
+                pairing) label="wireless debugging, type its pairing code";;
+                *)       label="$state: press Allow on the TV";;
+            esac
+            printf '    %d. %-22s %-28s (%s)\n' "$N" "$addr" "$label" "$kind"
+            if [ "$N" = 1 ]; then
+                first_addr="$addr"
+                first_label="$label"
+            fi
+        done < <(echo "$LIST")
+
+        # Enter only picks when there is a single device, so nobody sets up the wrong one by accident.
+        while :; do
+            if [ "$COUNT" = 1 ]; then
+                PICK=$(ask "Is this the TV? $first_addr ($first_label) — Enter = yes, or 'pair' to use a pairing code")
+                [ -z "$PICK" ] && PICK=1
+            else
+                PICK=$(ask "Which one is this TV? Type its number (or 'pair' to use a pairing code)")
+            fi
+            [ -n "$PICK" ] && break
+            warn "please type the number of the TV"
+        done
         case "$PICK" in
-            *[!0-9]*)
-                # not a number: an address typed by hand
-                ADDR=$PICK; STATE=new
-                case "$ADDR" in *:*) ;; *) ADDR="$ADDR:5555";; esac ;;
-            *)
-                PICKED=$(printf '%s\n' "$LIST" | sed -n "${PICK}p")
-                [ -n "$PICKED" ] || die "there is no device $PICK in the list"
-                ADDR=${PICKED%% *}; STATE=${PICKED##* } ;;
+            p|pair) pair_wireless;;
+            n|N|no|No) [ "$COUNT" = 1 ] && pair_wireless;;
         esac
+    fi
+
+    if [ -z "$ADDR" ]; then
+        if [ -z "$LIST" ]; then
+            echo "  No device found."
+            pair_wireless
+        else
+            case "$PICK" in
+                *[!0-9]*)
+                    # not a number: an address typed by hand
+                    ADDR=$PICK; STATE=new
+                    case "$ADDR" in *:*) ;; *) ADDR="$ADDR:5555";; esac ;;
+                *)
+                    PICKED=$(printf '%s\n' "$LIST" | sed -n "${PICK}p")
+                    [ -n "$PICKED" ] || die "there is no device $PICK in the list"
+                    ADDR=${PICKED%% *}; STATE=${PICKED##* } ;;
+            esac
+        fi
     fi
 fi
 
@@ -305,6 +432,10 @@ else
     ok "connected ($SERIAL)"
 fi
 
+# The setup app has no other honest signal that the TV answered: mDNS reports what is
+# advertising on the network, not what attached. This is what marks "Connect to the TV" done.
+[ -z "${CHUP_UI:-}" ] || printf '::connected %s\n' "$SERIAL" >&2
+
 # adb takes the script's stdin away from us (it is often piped in with curl | bash), and
 # would otherwise swallow lines meant for a pipe further down. Never let it read stdin.
 A() { "$ADB" -s "$SERIAL" "$@" </dev/null; }
@@ -316,20 +447,25 @@ wake_screen() { S input keyevent 224 >/dev/null 2>&1; }
 # A TV that sleeps its screen takes wireless debugging down with it - and comes back on a
 # different port - which kills a run half way through. Turn the screen on and hold it for as
 # long as we are working, then put the setting back exactly as we found it.
-STAY_ON_WAS=0
-restore_awake() { S settings put global stay_on_while_plugged_in "$STAY_ON_WAS" >/dev/null 2>&1; }
+# Empty means "we have not touched this setting", so restore_awake stays a no-op until
+# keep_awake has read what was there. A run stopped before that point must not write back a
+# value it never took.
+STAY_ON_WAS=""
+restore_awake() { if [ -n "$STAY_ON_WAS" ]; then S settings put global stay_on_while_plugged_in "$STAY_ON_WAS" >/dev/null 2>&1; fi; }
 # One handler for both clean-ups: kill the progress spinner so it can't outlive the script on
-# your terminal, then put the TV's stay-on setting back the way we found it.
+# your terminal, then put the TV's stay-on setting back the way we found it. Installed before
+# anything touches the TV, so a run stopped at any point - Ctrl-C, a failed step, or the setup
+# app being closed - still cleans up after itself.
 on_exit() { spinner_stop; restore_awake; }
+trap on_exit EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 keep_awake() {
     local v
     v=$(S settings get global stay_on_while_plugged_in 2>/dev/null | tr -d '\r')
     case "$v" in ''|null|*[!0-9]*) v=0 ;; esac
     STAY_ON_WAS=$v
     S svc power stayon true >/dev/null 2>&1
-    trap on_exit EXIT
-    trap 'exit 130' INT
-    trap 'exit 143' TERM
 }
 wake_screen
 sleep 1
@@ -342,12 +478,15 @@ ABI=$(S getprop ro.product.cpu.abi | tr -d '\r')
 ok "$MODEL, Android $ANDROID, $ABI"
 
 # ---------- download ----------
-bold "3/6  Downloading apps"
+bold "3/7  Downloading apps"
+# --progress-bar redraws one line with \r, which fills a log pane with noise instead of
+# feedback. -sS works on every curl macOS has shipped; --no-progress-meter (7.67+) does not.
+get() { if [ -n "${CHUP_UI:-}" ]; then curl -fL -sS "$@"; else curl -fL --progress-bar "$@"; fi; }
 # MANIFEST was fetched in step 1; it must exist now for the URLs below.
 [ -s "$MANIFEST" ] || die "could not read $REMOTE_SUPPORT_JSON"
 RD_URL=$(plutil -extract "builds.$ABI" raw -o - "$MANIFEST" 2>/dev/null)
 [ -n "$RD_URL" ] || die "no RustDesk build listed for $ABI"
-curl -fL --progress-bar -o "$WORK/rustdesk.apk" "$RD_URL" || die "RustDesk download failed"
+get -o "$WORK/rustdesk.apk" "$RD_URL" || die "RustDesk download failed"
 ok "RustDesk"
 
 if [ -n "$LOCAL_CHUP_APK" ]; then
@@ -356,12 +495,12 @@ if [ -n "$LOCAL_CHUP_APK" ]; then
 else
     CHUP_TV_APK_URL=$(plutil -extract "chup_tv.$CHUP_TV_BRANCH.url" raw -o - "$MANIFEST" 2>/dev/null)
     [ -n "$CHUP_TV_APK_URL" ] || die "no Chup TV app listed for '$CHUP_TV_BRANCH'"
-    curl -fL --progress-bar -o "$WORK/chup-tv.apk" "$CHUP_TV_APK_URL" || die "Chup TV app download failed ($CHUP_TV_APK_URL)"
+    get -o "$WORK/chup-tv.apk" "$CHUP_TV_APK_URL" || die "Chup TV app download failed ($CHUP_TV_APK_URL)"
 fi
 ok "Chup TV app"
 
 # ---------- install + grants ----------
-bold "4/6  Installing and granting permissions"
+bold "4/7  Installing and granting permissions"
 A install -r -g "$WORK/chup-tv.apk" | grep -q Success || die "Chup TV app install failed"
 ok "Chup TV app installed"
 A install -r -g "$WORK/rustdesk.apk" | grep -q Success || die "RustDesk install failed"
@@ -394,7 +533,7 @@ S cmd appops get $RUSTDESK | grep -q "PROJECT_MEDIA: allow" || die "screen captu
 ok "screen capture, overlay, background, battery exemption"
 
 # ---------- RustDesk settings ----------
-bold "5/6  RustDesk settings (Start on boot, password, start service)"
+bold "5/7  RustDesk settings (Start on boot, password, start service)"
 
 SIZE=$(S wm size | tr -d '\r' | awk '/Physical/{print $3}')
 SW=${SIZE%x*}; SH=${SIZE#*x}
@@ -403,7 +542,16 @@ SWIPE="$((SW/2)) $((SH*3/4)) $((SW/2)) $((SH/4))"
 # The same swipe the other way: back up towards the top of the list.
 SWIPE_BACK="$((SW/2)) $((SH/4)) $((SW/2)) $((SH*3/4))"
 
-ui_dump() { S uiautomator dump /sdcard/chup-ui.xml >/dev/null 2>&1; A exec-out cat /sdcard/chup-ui.xml 2>/dev/null; }
+# uiautomator dump can refuse -- "could not get idle state" while an app animates or ticks a
+# clock, which Chup TV's home screen does forever -- and it leaves the file from the last
+# successful dump behind. Reading that would have every ui_find describing a screen that is no
+# longer there and aiming taps at it, so clear it first: a failed dump then honestly reads as
+# "nothing on screen" rather than confidently as last time's screen.
+ui_dump() {
+    A shell rm -f /sdcard/chup-ui.xml
+    S uiautomator dump /sdcard/chup-ui.xml >/dev/null 2>&1
+    A exec-out cat /sdcard/chup-ui.xml 2>/dev/null
+}
 
 # A fingerprint of what is on screen, so we can tell whether a swipe moved the list.
 ui_sig() {
@@ -645,6 +793,9 @@ set_password() {
     [ -z "$(ui_find '^Set password$')" ] || { ui_tap_if '^Cancel$'; return 1; }
     ui_menu && ui_tap '^Accept sessions via password$' || return 1
     ui_menu && ui_tap '^Use permanent password$' || return 1
+    # The dialog-closing check above is what proves the password was written, and a correct
+    # password otherwise gives no sign that it worked.
+    ok "Permanent password is set"
     return 0
 }
 
@@ -706,14 +857,94 @@ fi
 enable_input || die "RustDesk remote control (Input control) is not active. Turn it on in RustDesk > Share screen, then run this again."
 ok "RustDesk is running, with remote control"
 
+# ---------- sign in ----------
+# Chup TV opens on its email/password screen; the 6-digit code from the dashboard sits one tap
+# away behind "Login with OTP". Returns 0 only once the Login button has left the screen, which
+# is what reaching the home screen does -- a refused code leaves the button sitting there.
+chup_signin() {
+    local code="$1" field attempt wait ready
+    S monkey -p $CHUPTV -c android.intent.category.LEANBACK_LAUNCHER 1 >/dev/null 2>&1
+
+    # Let it land before reading the screen. Either login control means "not signed in yet";
+    # neither appearing after this long means it went straight to the home screen.
+    ready=""
+    for wait in 1 2 3 4 5 6; do
+        sleep 2
+        if [ -n "$(ui_find '^Login$')" ] || [ -n "$(ui_find '^Login with OTP$')" ]; then
+            ready=1; break
+        fi
+    done
+    [ -n "$ready" ] || return 0
+
+    # Both screens carry the words "Login with OTP" -- a button on the email screen, the
+    # heading on the OTP screen -- so that string tells them apart not at all. The OTP screen
+    # is the one with an "OTP" label of its own and a single field.
+    if [ -z "$(ui_find '^OTP$')" ]; then
+        ui_tap '^Login with OTP$' || return 1
+        sleep 3
+    fi
+    [ -n "$(ui_find '^OTP$')" ] || return 1
+
+    for attempt in 1 2 3; do
+        field=$(ui_fields | head -n 1)
+        [ -n "$field" ] || return 1
+        S input tap $field
+        sleep 2
+        # input text appends, so clear whatever a previous attempt left behind.
+        S input keyevent 67 67 67 67 67 67 67 67 67 67 67 67
+        type_text "$code"
+        sleep 1
+        # ui_tap measures the keyboard's own touchable region and taps somewhere it is not
+        # covering, pressing Tab until it slides away if it covers the whole control. Nothing
+        # to dismiss here, and no BACK that could leave the screen instead.
+        ui_tap '^Login$' || return 1
+        for wait in 1 2 3 4 5; do
+            [ -z "$(ui_find '^Login$')" ] && return 0
+            sleep 2
+        done
+    done
+    return 1
+}
+
+bold "6/7  Sign in to Chup TV"
+wake_screen
+while :; do
+    CHUP_CODE=$(ask_secure "Chup TV login code from the dashboard:") || die "no code entered"
+    case "$CHUP_CODE" in
+        *[!0-9]*) warn "the code is digits only"; continue;;
+    esac
+    [ ${#CHUP_CODE} -eq 6 ] && break
+    warn "the code is six digits"
+done
+spinner_start "signing in to Chup TV"
+if chup_signin "$CHUP_CODE"; then
+    ok "Chup TV is signed in"
+else
+    spinner_stop
+    warn "automatic sign-in didn't take"
+    echo "  On the TV, open Chup TV and sign in with that same code:"
+    echo "    1. Choose 'Login with OTP'"
+    echo "    2. Enter the 6-digit code from the dashboard"
+    echo "    3. Press 'Login'"
+    pause "When the home screen is showing,"
+fi
+
 # ---------- finish ----------
-bold "6/6  Finishing"
+bold "7/7  Finishing"
 wake_screen
 S monkey -p $CHUPTV -c android.intent.category.LEANBACK_LAUNCHER 1 >/dev/null 2>&1
 ok "Chup TV app opened"
 
-R=$(ask "Restart the TV now to check RustDesk comes back by itself? [Y/n]:")
-case "$R" in n|N) ;; *)
+# The Chup Setup app sets CHUP_RESTART from its checkbox rather than prompting at the very end.
+if [ -n "${CHUP_UI:-}" ] && [ -n "${CHUP_RESTART:-}" ]; then
+    R="$CHUP_RESTART"
+    echo "  Restart the TV after setup: $R"
+else
+    R=$(ask "Restart the TV now to check RustDesk comes back by itself? [Y/n]:")
+fi
+# 'no' has to count: typing it at the [Y/n] prompt used to reboot anyway, and the setup app
+# sends the checkbox value as 'yes'/'no'.
+case "$R" in n|N|no|No|NO) ;; *)
     A reboot
     echo "  Restarting, this takes about 2 minutes..."
     spinner_start "waiting for the TV to come back"

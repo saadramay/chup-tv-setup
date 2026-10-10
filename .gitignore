@@ -1,2 +1,4 @@
-*.apk
 .DS_Store
+app/build/
+app/dist/
+app/screenshots/originals/
