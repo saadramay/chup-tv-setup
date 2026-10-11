@@ -861,15 +861,51 @@ accept_start_now() {
 
 # MainService stays listed after it stops (something is still bound to it), so ask whether it
 # was actually started rather than just whether the name appears.
-service_running() { S dumpsys activity services $RUSTDESK | grep -qE 'startRequested=true|isForeground=true'; }
+# What this replaced grepped `dumpsys activity services` for startRequested=true -- which is
+# MainService, RustDesk's foreground process. It is up whenever the app is alive, and up
+# exactly the same with remote control switched off, so it called a box "running" that
+# nobody could connect to. That is the worst way to be wrong here: step 5 ends by telling
+# the operator they are done.
+#
+# Remote control is the accessibility service, InputService, and `dumpsys accessibility`
+# names it "RustDesk Input" only while it is bound and running -- 0 hits the moment the grant
+# is revoked. It is also the signal enable_input already trusts for its own success, so the
+# two finally agree about what "running" means.
+service_running() {
+    S dumpsys accessibility | grep -q "label=RustDesk Input"
+}
 
 DONE=0
 echo "  Working on the TV screen, please don't press anything on the remote..."
 wake_screen
 spinner_start "setting up RustDesk on the TV"
-if auto_settings && service_running; then DONE=1; ok "done automatically"; else warn "automatic setup didn't finish, please do these steps by hand"; fi
+auto_settings && service_running && DONE=1
 
+# RustDesk's "Start service" hands you a system consent dialog, and that tap is the one step
+# in the whole run that can miss -- it does nothing and says nothing when it does. It is not
+# the only road to the same state: the grant can be written straight into the secure
+# settings, which is precisely what the dialog would have left behind. Take that road, and
+# write the password, before asking anybody to pick up the remote. A service left running
+# with no permanent password would be worse than stopping here, so the password goes with it.
+finish_settings() {
+    enable_input || return 1
+    S monkey -p $RUSTDESK -c android.intent.category.LAUNCHER 1 >/dev/null 2>&1
+    sleep 5
+    dismiss_leftovers
+    # The launcher opens on the connection tab; the password menu lives on Share screen.
+    ui_tap '^Share screen&#10;Tab' || return 1
+    set_password || return 1
+    service_running
+}
 if [ "$DONE" = 0 ]; then
+    ask_password
+    finish_settings && DONE=1
+fi
+
+if [ "$DONE" = 1 ]; then
+    ok "done automatically"
+else
+    warn "automatic setup didn't finish, please do these steps by hand"
     ask_password
     echo "  On the TV, open RustDesk and:"
     echo "    1. Settings > turn ON 'Start on boot' and turn OFF 'Floating window'"
