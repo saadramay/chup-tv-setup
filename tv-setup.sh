@@ -528,6 +528,9 @@ bold "4/7  Installing and granting permissions"
 install_app $CHUPTV "$WORK/chup-tv.apk" "Chup TV app"
 ok "Chup TV app installed"
 install_app $RUSTDESK "$WORK/rustdesk.apk" "RustDesk"
+# 32-bit TV firmware aborts inside AudioRecord when RustDesk starts audio capture (rustdesk#1038).
+# Without the microphone permission RustDesk skips audio, so the crash path is never entered.
+S pm revoke $RUSTDESK android.permission.RECORD_AUDIO >/dev/null 2>&1 || true
 ok "RustDesk installed"
 
 S appops set $RUSTDESK PROJECT_MEDIA allow
