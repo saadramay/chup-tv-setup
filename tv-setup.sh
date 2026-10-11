@@ -690,6 +690,28 @@ ui_tap_if() {
     S input tap $(tap_point $b); sleep 1.5
 }
 
+# True when a node matching the regex is the focused one.
+ui_is_focused() {
+    ui_dump | LC_ALL=C perl -0ne '
+        my $re = qr/'"$1"'/i;
+        while (/<node\b([^>]*)>/g) {
+            my $a = $1;
+            my ($t) = $a =~ /\btext="([^"]*)"/; my ($d) = $a =~ /\bcontent-desc="([^"]*)"/;
+            next unless (($t // "") =~ $re) || (($d // "") =~ $re);
+            exit($a =~ /\bfocused="true"/ ? 0 : 1);
+        }
+        exit 1'
+}
+
+# Native TV controls marked focusableInTouchMode take focus on the first tap and only click on
+# the next one. Tap, and if the control is now merely focused, press the remote's centre key.
+ui_press() {
+    ui_tap "$1" || return 1
+    if ui_is_focused "$1"; then
+        S input keyevent 23; sleep 1.5
+    fi
+}
+
 ui_tap() {
     local b
     b=$(ui_seek ui_box "$1") || return 1
@@ -950,7 +972,7 @@ chup_signin() {
     # tap landed while the app was still animating into place.
     for attempt in 1 2 3; do
         [ -n "$(ui_find '^OTP$')" ] && break
-        ui_tap '^Login with OTP$' || break
+        ui_press '^Login with OTP$' || break
         for wait in 1 2 3 4 5; do
             [ -n "$(ui_find '^OTP$')" ] && break
             sleep 1
@@ -970,8 +992,9 @@ chup_signin() {
         # ui_tap measures the keyboard's own touchable region and taps somewhere it is not
         # covering, pressing Tab until it slides away if it covers the whole control. Nothing
         # to dismiss here, and no BACK that could leave the screen instead.
-        ui_tap '^Login$' || return 1
-        for wait in 1 2 3 4 5; do
+        ui_press '^Login$' || return 1
+        # Sign-in goes through the API and Firebase; give it longer than a local tap.
+        for wait in $(seq 1 15); do
             [ -z "$(ui_find '^Login$')" ] && return 0
             sleep 2
         done
