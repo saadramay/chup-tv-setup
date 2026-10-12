@@ -116,26 +116,10 @@ password_ok() {
     LC_ALL=C; case "$1" in *[!\ -~]*) unset LC_ALL; warn "only plain keyboard characters (no accents or emoji)"; return 1;; esac; unset LC_ALL
 }
 
-# Asks for the RustDesk permanent password once RustDesk is installed and Start on boot is set.
-# Or set RUSTDESK_PASSWORD to skip the prompt.
-RD_PASSWORD="${RUSTDESK_PASSWORD:-}"
+# The RustDesk permanent password is fixed for Selgate TVs. Override with RUSTDESK_PASSWORD if ever needed.
+RD_PASSWORD="${RUSTDESK_PASSWORD:-Selgate123}"
 ask_password() {
-    [ -n "$RD_PASSWORD" ] && { password_ok "$RD_PASSWORD" || die "RUSTDESK_PASSWORD doesn't meet RustDesk's rules"; return 0; }
-    # The prompt goes straight to the terminal, so hide the spinner while it's up and put it
-    # back afterwards -- the settings run on the TV continues for a while after this.
-    local had_spin="$SPIN_PID"
-    spinner_stop
-    while :; do
-        if [ -n "${CHUP_UI:-}" ]; then
-            printf '::ask secure %s\n' "RustDesk permanent password" >&2
-            IFS= read -r RD_PASSWORD || die "no password entered"
-        else
-            printf '  RustDesk permanent password: ' >/dev/tty
-            IFS= read -r RD_PASSWORD </dev/tty || die "no password entered"
-        fi
-        password_ok "$RD_PASSWORD" && break
-    done
-    [ -n "$had_spin" ] && spinner_start "$SPIN_MSG"
+    password_ok "$RD_PASSWORD" || die "RUSTDESK_PASSWORD doesn't meet RustDesk's rules"
     return 0
 }
 
@@ -945,7 +929,7 @@ else
     echo "  On the TV, open RustDesk and:"
     echo "    1. Settings > turn ON 'Start on boot' and turn OFF 'Floating window'"
     echo "    2. Open the 'Share screen' tab and press 'Start service'"
-    echo "    3. Top-right menu > 'Set permanent password' (the one you typed above)"
+    echo "    3. Top-right menu > 'Set permanent password' -> set it to: $RD_PASSWORD"
     echo "    4. Top-right menu > 'Accept sessions via password', then 'Use both passwords'"
     pause "When all four are done,"
     service_running || die "RustDesk service is not running yet. Press 'Start service' in RustDesk, then run this again."
