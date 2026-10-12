@@ -533,6 +533,7 @@ install_app $RUSTDESK "$WORK/rustdesk.apk" "RustDesk"
 S pm revoke $RUSTDESK android.permission.RECORD_AUDIO >/dev/null 2>&1 || true
 ok "RustDesk installed"
 
+S appops set $CHUPTV SYSTEM_ALERT_WINDOW allow
 S appops set $RUSTDESK PROJECT_MEDIA allow
 S appops set $RUSTDESK SYSTEM_ALERT_WINDOW allow
 S appops set $RUSTDESK RUN_IN_BACKGROUND allow
@@ -541,14 +542,23 @@ S dumpsys deviceidle whitelist +$RUSTDESK >/dev/null
 
 INPUT_SVC="$RUSTDESK/$RUSTDESK.InputService"
 # Turned on only after step 5: every uiautomator screen read suspends accessibility services.
-enable_input() {
+# Chup TV's own remote-control service, driven from the server; clicks where RustDesk's taps can't.
+REMOTE_SVC="$CHUPTV/$CHUPTV.remote.ChupRemoteService"
+
+# enable_service <component>: add one accessibility service without dropping the others.
+enable_service() {
     local cur
     cur=$(S settings get secure enabled_accessibility_services | tr -d '\r')
     case "$cur" in
-        *"$INPUT_SVC"*) ;;
-        ""|null) S settings put secure enabled_accessibility_services "$INPUT_SVC" ;;
-        *) S settings put secure enabled_accessibility_services "$cur:$INPUT_SVC" ;;
+        *"$1"*) ;;
+        ""|null) S settings put secure enabled_accessibility_services "$1" ;;
+        *) S settings put secure enabled_accessibility_services "$cur:$1" ;;
     esac
+}
+
+enable_input() {
+    enable_service "$INPUT_SVC"
+    enable_service "$REMOTE_SVC"
     S settings put secure accessibility_enabled 1
     sleep 2
     S dumpsys accessibility | grep -q "label=RustDesk Input"
