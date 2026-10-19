@@ -1,0 +1,158 @@
+{
+  "version": 1,
+  "channels": [
+    {
+      "key": "tv1",
+      "name": "TV1",
+      "number": "101",
+      "logo": "https://rtm-images.glueapi.io/320x0/live_channel/tv1_bckg.png",
+      "headers": {},
+      "url": "https://d25tgymtnqzu8s.cloudfront.net/smil:tv1/manifest.mpd",
+      "type": "dash"
+    },
+    {
+      "key": "tv2",
+      "name": "TV2",
+      "number": "102",
+      "logo": "https://tv2.rtm.gov.my/assets/img/TV2.png",
+      "headers": {},
+      "url": "https://d25tgymtnqzu8s.cloudfront.net/smil:tv2/manifest.mpd",
+      "type": "dash"
+    },
+    {
+      "key": "tv3",
+      "name": "TV3",
+      "number": "103",
+      "logo": "https://headend-api.tonton.com.my/v100/imageHelper.php?id=6420323:378:CHANNEL:IMAGE:png&w=200&appID=TONTON",
+      "headers": {},
+      "url": "https://tonton-live-ssai.akamaized.net/live/2dd2b7cd-1b34-4871-b669-57b5c9beca23/cmaf.isml/.m3u8",
+      "type": "hls"
+    },
+    {
+      "key": "drama-sangat",
+      "name": "Drama Sangat",
+      "number": "106",
+      "logo": "https://headend-api.tonton.com.my/v210/imageHelper.php?id=6420342:378:CHANNEL:IMAGE:png&w=150&appID=TONTON",
+      "headers": {
+        "Referer": "https://live-xtra-sg1.global.ssl.fastly.net/embed/index.html?vid=11056637",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/117.0.0.0 Safari/537.36"
+      },
+      "url": "https://live-xtra-sg1.global.ssl.fastly.net/live-hls/tonton5_720p/index.m3u8",
+      "type": "hls"
+    },
+    {
+      "key": "didiktv-kpm",
+      "name": "DidikTV KPM",
+      "number": "107",
+      "logo": "https://headend-api.tonton.com.my/v100/imageHelper.php?id=6420324:378:CHANNEL:IMAGE:png&w=200&appID=TONTON",
+      "headers": {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/117.0.0.0 Safari/537.36",
+        "Referer": "https://live-xtra-sg1.global.ssl.fastly.net/embed/index.html?vid=11056641&autoplay=1&mute=0"
+      },
+      "url": "https://tonton-live-ssai.akamaized.net/live/0e27ef78-4cc9-4c62-bec9-5c946c9e7354/cmaf.isml/.m3u8",
+      "type": "hls"
+    },
+    {
+      "key": "8tv",
+      "name": "8TV",
+      "number": "108",
+      "logo": "https://headend-api.tonton.com.my/v100/imageHelper.php?id=6420325:378:CHANNEL:IMAGE:png&w=200&appID=TONTON",
+      "headers": {
+        "Referer": "https://live-xtra-sg1.global.ssl.fastly.net/embed/index.html?vid=11056645&autoplay=1&mute=0",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/117.0.0.0 Safari/537.36"
+      },
+      "url": "https://tonton-live-ssai.akamaized.net/live/a884c33b-6b11-4433-8bf9-a8899939e224/cmaf.isml/.m3u8",
+      "type": "hls"
+    },
+    {
+      "key": "tv9",
+      "name": "TV9",
+      "number": "109",
+      "logo": "https://headend-api.tonton.com.my/v100/imageHelper.php?id=6420326:378:CHANNEL:IMAGE:png&w=200&appID=TONTON",
+      "headers": {},
+      "url": "https://tonton-live-ssai.akamaized.net/live/2020783a-0303-401a-9c92-b7c3c9108c0b/cmaf.isml/.m3u8",
+      "type": "hls"
+    },
+    {
+      "key": "okey",
+      "name": "OKEY",
+      "number": "110",
+      "logo": "https://rtm-images.glueapi.io/320x0/live_channel/SALURAN_1920x1080px_TVOKEY.jpg",
+      "headers": {},
+      "url": "https://d25tgymtnqzu8s.cloudfront.net/smil:okey/manifest.mpd",
+      "type": "dash"
+    },
+    {
+      "key": "sukan-rtm",
+      "name": "Sukan RTM",
+      "number": "111",
+      "logo": "https://rtm-images.glueapi.io/320x0/live_channel/SALURAN_1920x1080px_SUKANRTM.jpg",
+      "headers": {},
+      "url": "https://d25tgymtnqzu8s.cloudfront.net/smil:sukan/manifest.mpd",
+      "type": "dash"
+    },
+    {
+      "key": "awesome-tv",
+      "name": "Awesome TV",
+      "number": "112",
+      "logo": "https://awesometv.my/upload/Logo%20&%20Favicon/logo-ATV.png",
+      "headers": {},
+      "url": "https://222861.global.ssl.fastly.net/6698cc14fa04165068a80345/live_e5f0c8504d8b11efbacf2feeebc6c76f/index.m3u8",
+      "type": "hls"
+    },
+    {
+      "key": "tv6",
+      "name": "TV6",
+      "number": "113",
+      "logo": "https://rtm-images.glueapi.io/320x0/live_channel/SALURAN_1920x1080px_TV6.jpg",
+      "headers": {},
+      "url": "https://d25tgymtnqzu8s.cloudfront.net/smil:tv6/manifest.mpd",
+      "type": "dash"
+    },
+    {
+      "key": "tv-alhijrah",
+      "name": "TV Alhijrah",
+      "number": "114",
+      "logo": "https://tvalhijrah.com/wp-content/uploads/2023/04/TV_Alhijrah_logo-1.png",
+      "headers": {},
+      "url": "https://172048-castr.akamaized.net/61e0e9a88ecf869e0a595bfa/live_feb292e0f94c11edbc052354c95d3ff1/index.m3u8",
+      "type": "hls"
+    },
+    {
+      "key": "suke-tv",
+      "name": "Suke TV",
+      "number": "116",
+      "logo": "https://suketv.com/sitepad-data/uploads/2023/06/STV_WHITE-LOGO-1.png",
+      "headers": {},
+      "url": "https://live.mana2.my/SukeTv/index.m3u8",
+      "type": "hls"
+    },
+    {
+      "key": "bernama",
+      "name": "Bernama",
+      "number": "121",
+      "logo": "https://www.bernama.com/tv/assets/img/bernama.png",
+      "headers": {},
+      "url": "https://ythls-v3.onrender.com/channel/UCcZg5r9hBqK_VPUT2I7eYVw.m3u8",
+      "type": "hls"
+    },
+    {
+      "key": "tvs",
+      "name": "TVS",
+      "number": "122",
+      "logo": "https://s3.tvstv.my/wp-content/uploads/2024/03/tvs-logo-reduced.png",
+      "headers": {},
+      "url": "https://stream2.smg.my/live/tvs_1080p2628kbs/index.m3u8",
+      "type": "hls"
+    },
+    {
+      "key": "berita-rtm",
+      "name": "Berita RTM",
+      "number": "123",
+      "logo": "https://berita.rtm.gov.my/images/01-homepage/logo-berita.png",
+      "headers": {},
+      "url": "https://d25tgymtnqzu8s.cloudfront.net/smil:berita/playlist.m3u8?id=5",
+      "type": "hls"
+    }
+  ]
+}
